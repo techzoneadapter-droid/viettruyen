@@ -45,7 +45,7 @@ jobs:
           $version = (Get-Content package.json | ConvertFrom-Json).version
           git tag "v$version"
           git push origin "v$version"
-          gh release create "v$version" dist/*.exe dist/*.blockmap dist/latest.yml --title "Việt Truyện $version" --notes "Bản Windows tiếng Việt. Đã kiểm thử cài đặt, lưu dữ liệu, kết nối và giao diện cập nhật."
+          gh release create "v$version" dist/*.exe dist/*.blockmap dist/latest.yml dist/ui-*.png --title "Việt Truyện $version" --notes "Bản Windows tiếng Việt. Đã kiểm thử cài đặt, lưu dữ liệu, kết nối và giao diện cập nhật."
       - uses: actions/upload-artifact@v4
         if: always()
         with:
