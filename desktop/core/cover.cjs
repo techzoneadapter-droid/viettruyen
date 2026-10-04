@@ -4,19 +4,19 @@ function promptFor(p,config){return 'Create one original, polished novel cover i
 async function boundedJSON(response){if(!response.ok){await response.body?.cancel();throw new Error(response.status===429?'Hết hạn mức tạo ảnh. Truyện vẫn được giữ.':`Nguồn ảnh trả HTTP ${response.status}. Kiểm tra model và quyền tạo ảnh của tài khoản; app không tự chuyển sang nguồn trả phí khác.`);}let bytes=0,text='',decoder=new TextDecoder();for await(const chunk of response.body){bytes+=chunk.length;if(bytes>60*1024*1024)throw new Error('Phản hồi ảnh quá lớn.');text+=decoder.decode(chunk,{stream:true});}return JSON.parse(text+decoder.decode());}
 function imageBuffer(base64){if(typeof base64!=='string'||base64.length>55*1024*1024||!/^[A-Za-z0-9+/=\r\n]+$/.test(base64))throw new Error('Nguồn AI không trả về dữ liệu ảnh hợp lệ.');const data=Buffer.from(base64,'base64');if(!data.length||data.length>40*1024*1024)throw new Error('Ảnh nguồn quá lớn hoặc rỗng.');return data;}
 async function requestImage(settings,auth,prompt,config,signal,fetcher=fetch){
- const provider=config.provider==='current'?settings.provider:config.provider;const model=config.model||(provider==='gemini'?'gemini-3.1-flash-image':'gpt-image-2.5-sunburst');
+ const provider=config.provider==='current'?settings.provider:config.provider;
+ if(provider==='chatgpt')throw new Error('Đăng nhập ChatGPT hiện chưa hỗ trợ tạo ảnh trong ứng dụng bên ngoài, kể cả gói trả phí. Chọn Gemini API hoặc OpenAI API riêng cho bìa, hoặc nhập ảnh đã tạo trong ChatGPT. Nguồn viết truyện được giữ nguyên.');
+ const model=config.model||(provider==='gemini'?'gemini-3.1-flash-image':'gpt-image-2.5-sunburst');
  const combined=signal?AbortSignal.any([signal,AbortSignal.timeout(10*60*1000)]):AbortSignal.timeout(10*60*1000);let url,headers,body;
  if(provider==='gemini'){
   if(!settings.geminiKey)throw new Error('Nguồn bìa Gemini cần Gemini API key trong Kết nối AI.');
   url='https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(model)+':generateContent';headers={'x-goog-api-key':settings.geminiKey};body={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseModalities:['TEXT','IMAGE'],responseFormat:{image:{aspectRatio:'2:3',...(model.includes('2.5')?{}:{imageSize:'2K'})}}}};
  }else{
-  const token=provider==='chatgpt'?await auth.access():settings.openaiKey;if(!token)throw new Error('Đăng nhập ChatGPT hoặc lưu OpenAI API key cho nguồn bìa đã chọn.');headers={Authorization:'Bearer '+token};
-  if(provider==='chatgpt'){if(!settings.model)throw new Error('Chọn model ChatGPT trong Kết nối AI.');url='https://api.openai.com/v1/responses';body={model:settings.model,input:prompt,store:false,tools:[{type:'image_generation',model,size:'1024x1536',quality:'high',output_format:'jpeg'}],tool_choice:{type:'image_generation'}};}
-  else{url='https://api.openai.com/v1/images/generations';body={model,prompt,size:'1024x1536',quality:'high',output_format:'jpeg',n:1};}
+  if(!settings.openaiKey)throw new Error('Nguồn bìa OpenAI cần OpenAI API key; đăng nhập ChatGPT không thay thế API key.');headers={Authorization:'Bearer '+settings.openaiKey};
+  url='https://api.openai.com/v1/images/generations';body={model,prompt,size:'1024x1536',quality:'high',output_format:'jpeg',n:1};
  }
  const value=await boundedJSON(await fetcher(url,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(body),signal:combined}));let encoded;
  if(provider==='gemini'){const c=value.candidates?.[0];if(c?.finishReason!=='STOP')throw new Error('Gemini không hoàn tất ảnh; bìa cũ được giữ.');const part=c.content?.parts?.find(x=>!x.thought&&/^image\//.test(x.inlineData?.mimeType||x.inline_data?.mime_type||''));encoded=part?.inlineData?.data||part?.inline_data?.data;}
- else if(provider==='chatgpt'){if(value.status!=='completed')throw new Error('ChatGPT chưa tạo xong ảnh hoặc chưa hỗ trợ quyền tạo ảnh cho app.');encoded=value.output?.find(x=>x.type==='image_generation_call'&&x.status==='completed')?.result;}
  else encoded=value.data?.[0]?.b64_json;
  if(!encoded)throw new Error('Model không trả ảnh. Chọn model tạo ảnh hoặc nguồn bìa khác; bản thảo không bị thay đổi.');return {data:imageBuffer(encoded),provider,model};
 }
