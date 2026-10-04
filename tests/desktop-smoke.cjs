@@ -1,6 +1,6 @@
 const {_electron:electron}=require('playwright-core');const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),assert=require('node:assert/strict');
 (async()=>{
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'viet-desktop-'));let instance;
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'viet-desktop-'));let instance;const moved=path.join(root,'moved-data');
  const executable=process.env.VIETTRUYEN_SMOKE_EXE||path.resolve('dist/win-unpacked/VietTruyen.exe');
  try{
   instance=await electron.launch({executablePath:executable,env:{...process.env,VIETTRUYEN_TEST_USER_DATA:root},timeout:60000});
@@ -13,13 +13,24 @@ const {_electron:electron}=require('playwright-core');const fs=require('node:fs'
   await page.getByRole('heading',{name:'Hành trình 1.000 chương'}).waitFor();assert.match(await page.locator('#content').innerText(),/1000 chương dự kiến/);
   await page.getByRole('button',{name:'Hồ sơ truyện',exact:true}).click();await page.locator('#bible').fill('An 20 tuổi, sống ở bến cảng. Chưa biết thân thế gia đình.');await page.getByRole('button',{name:'Lưu hồ sơ',exact:true}).click();await page.getByRole('status').filter({hasText:'Đã lưu hồ sơ.'}).waitFor();
   const p=await page.evaluate(async()=>{const list=await window.viet.call('projects:list');return window.viet.call('projects:get',list[0].id);});assert.equal(p.target,1000);assert.match(p.bible,/An 20 tuổi/);
+  const font=await page.getByRole('heading',{name:'Hành trình 1.000 chương'}).evaluate(el=>getComputedStyle(el).fontFamily);assert.match(font,/Segoe UI/);
+  await page.screenshot({path:'dist/ui-vietnamese.png'});
+  await page.locator('[data-page=storage]').click();await page.getByRole('heading',{name:'Nơi lưu truyện',exact:true}).waitFor();
+  await instance.evaluate(({dialog},destination)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[destination]});},moved);
+  await page.getByRole('button',{name:'Đổi thư mục lưu truyện',exact:true}).click();await page.getByRole('status').filter({hasText:'Đã chuyển bản sao'}).waitFor();
+  const location=await page.evaluate(()=>window.viet.call('data:location'));assert.equal(location.root,moved);assert.ok(fs.existsSync(path.join(root,'data','projects',p.id,'project.json')));assert.ok(fs.existsSync(path.join(moved,'projects',p.id,'project.json')));
+  await page.screenshot({path:'dist/ui-storage.png'});
+  const idea={title:'Thành phố ký ức',genre:'Trinh thám',premise:'Một người giải mã những ký ức bị đánh cắp.',hook:'Mỗi ký ức là một đầu mối.',direction:'Mỗi quyển một vụ án gắn với bí mật toàn truyện.',basis:'Mẫu kiểm thử giao diện; không phải dữ liệu xu hướng thật.',sourceIds:[1]};
+  fs.writeFileSync(path.join(moved,'ideas.json'),JSON.stringify({query:'mẫu kiểm thử',genre:'Trinh thám',fetchedAt:new Date().toISOString(),items:[{title:'Nguồn mẫu kiểm thử',source:'Mẫu kiểm thử',published:new Date().toISOString(),url:'https://news.google.com/rss/articles/test'}],ideas:[idea]}));
+  await page.reload();await page.locator('[data-page=ideas]').click();await page.getByRole('heading',{name:'Thành phố ký ức',exact:true}).waitFor();await page.screenshot({path:'dist/ui-ideas.png'});
+  await page.getByRole('button',{name:'Dùng ý tưởng tạo truyện',exact:true}).click();assert.equal(await page.locator('[name=title]').inputValue(),idea.title);assert.equal(await page.locator('[name=genre]').inputValue(),idea.genre);assert.match(await page.locator('[name=premise]').inputValue(),/Hướng phát triển/);await page.locator('#close-dialog').click();
   await page.locator('[data-page=settings]').click();await page.locator('#provider').selectOption('gemini');await page.locator('#api-key').fill('test-only-key');await page.getByRole('button',{name:'Lưu kết nối',exact:true}).click();await page.getByRole('status').filter({hasText:'Đã lưu kết nối.'}).waitFor();
   const settings=await page.evaluate(()=>window.viet.call('init'));assert.equal(settings.settings.provider,'gemini');assert.equal(settings.settings.hasGeminiKey,true);assert.equal(settings.settings.geminiKey,undefined);
   const credentialFile=path.join(root,'credentials.json');assert.ok(fs.existsSync(credentialFile));assert.ok(!fs.readFileSync(credentialFile,'utf8').includes('test-only-key'));
   await page.locator('[data-page=update]').click();await page.getByRole('button',{name:'Cập nhật ngay',exact:true}).waitFor();const update=await page.evaluate(()=>window.viet.call('update:auto'));assert.equal(update.status,'current');
   await page.screenshot({path:'dist/ui-update.png'});assert.deepEqual(errors,[]);
   await instance.close();instance=null;
-  instance=await electron.launch({executablePath:executable,env:{...process.env,VIETTRUYEN_TEST_USER_DATA:root},timeout:60000});const reopened=await instance.firstWindow();await reopened.getByRole('button',{name:/Hành trình 1.000 chương/}).waitFor();assert.match(await reopened.locator('#connection-label').innerText(),/Gemini/);
-  console.log('WINDOWS DESKTOP PASS: installed app opens; real IPC; project persists with 1000 target; bible saved; credentials encrypted; one-click updater reaches GitHub and verifies current version; restart preserves data; no renderer errors.');
+  instance=await electron.launch({executablePath:executable,env:{...process.env,VIETTRUYEN_TEST_USER_DATA:root},timeout:60000});const reopened=await instance.firstWindow();await reopened.getByRole('button',{name:/Hành trình 1.000 chương/}).waitFor();assert.match(await reopened.locator('#connection-label').innerText(),/Gemini/);assert.equal((await reopened.evaluate(()=>window.viet.call('data:location'))).root,moved);await reopened.locator('[data-page=ideas]').click();await reopened.getByRole('heading',{name:'Thành phố ký ức',exact:true}).waitFor();
+  console.log('WINDOWS DESKTOP PASS: installed app opens; real IPC; project persists with 1000 target; bible saved; credentials encrypted; one-click updater reaches GitHub and verifies current version; restart preserves data and chosen storage; Vietnamese heading font; storage copy; ideas source display and create-story handoff; no renderer errors.');
  }finally{if(instance)await instance.close();fs.rmSync(root,{recursive:true,force:true});}
 })().catch(e=>{console.error(e);process.exit(1);});

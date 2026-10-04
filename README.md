@@ -13,6 +13,14 @@
 6. Xem bản thảo, dàn ý, trạng thái nhân vật, các tuyến đang mở. AI kiểm tra không thay thế biên tập viên.
 7. Xuất TXT để dùng cho app truyện/video hoặc xuất JSON để sao lưu; Nhập sao lưu tạo một bản truyện riêng.
 
+## Nơi lưu truyện
+Vào **Nơi lưu truyện → Đổi thư mục lưu truyện**, chọn thư mục trống trên ổ đĩa mong muốn. App sao chép và kiểm tra truyện, bộ nhớ, bản sao lưu và ý tưởng rồi mới áp dụng; bản gốc được giữ nguyên. Không đổi giữa tác vụ. Thư mục đã chọn được giữ sau khi đóng/mở app và cập nhật. API key/token vẫn ở kho mã hóa hệ điều hành. Nếu dùng ổ rời, cần kết nối ổ trước khi mở app.
+
+## Ý tưởng & xu hướng
+Vào **Ý tưởng & xu hướng**, nhập chủ đề, bấm **Lấy tín hiệu mới từ web**. App lấy tiêu đề tin Google News gần đây (30 ngày), hiển thị nguồn và thời điểm lấy dữ liệu. Sau đó chọn thể loại và bấm **AI đề xuất hướng truyện** để tạo ý tưởng, điểm cuốn hút và hướng nhiều quyển cho truyện dài. Dùng nút **Dùng ý tưởng tạo truyện** để điền sẵn form tạo truyện.
+
+Lấy tín hiệu web không cần AI; tạo ý tưởng dùng model đã chọn và tiêu tốn hạn mức. Gợi ý là suy luận sáng tạo dựa trên tiêu đề, không phải thống kê lượt đọc hoặc bảng xếp hạng truyện. Nếu mạng lỗi hoặc không có tin, app thông báo và giữ kết quả trước đó.
+
 ## Cập nhật
 Vào **Cập nhật ứng dụng → Cập nhật ngay**. Một lần bấm sẽ kiểm tra, tải và cài bản mới, rồi khởi động lại app. Bạn cũng có thể dùng các nút kiểm tra/tải/cài riêng nếu muốn xem bản mới trước.
 
