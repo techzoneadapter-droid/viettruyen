@@ -1,0 +1,3 @@
+const {contextBridge,ipcRenderer}=require('electron');
+const allowed=new Set(['init','projects:list','projects:get','projects:create','projects:save','chapters:save','jobs:start','jobs:pause','jobs:abort','settings:save','auth:login','auth:cancel','auth:logout','ai:models','ai:test','export','import','data:open','update:check','update:download','update:install']);
+contextBridge.exposeInMainWorld('viet',{call:async(name,args)=>{if(!allowed.has(name))throw new Error('Yêu cầu không được hỗ trợ.');const result=await ipcRenderer.invoke(name,args);if(!result.ok)throw new Error(result.error);return result.data;},onEvent:callback=>{const listener=(_event,value)=>callback(value);ipcRenderer.on('event',listener);return()=>ipcRenderer.removeListener('event',listener);}});
