@@ -13,6 +13,19 @@
 6. Xem bản thảo, dàn ý, trạng thái nhân vật, các tuyến đang mở. AI kiểm tra không thay thế biên tập viên.
 7. Xuất TXT để dùng cho app truyện/video hoặc xuất JSON để sao lưu; Nhập sao lưu tạo một bản truyện riêng.
 
+## Bìa truyện và ZIP
+Bìa tự tạo sau khi lập hồ sơ truyện ở đợt viết đầu tiên. Truyện đã có hồ sơ nhưng chưa có bìa cũng được thử tạo khi chạy tiếp. Trong tab **Bìa truyện**, chọn nguồn ảnh (cùng nguồn đang viết, ChatGPT, Gemini API hoặc OpenAI API), phong cách bổ sung, JPG/WebP và bật/tắt tự tạo. Model ảnh riêng, không thay đổi model viết. Có thể lưu API key cho nguồn ảnh ngay ở tab này mà không đổi nguồn đang viết.
+
+Prompt bìa dựa trên thể loại, ý tưởng, hồ sơ nhân vật/thế giới, văn phong và đoạn truyện. AI tạo tranh không chữ; app ghép tên truyện để giữ đúng dấu tiếng Việt. Có thể bỏ ghép tên, tạo lại, nhập ảnh có sẵn và tải bìa riêng.
+
+**Cố định 2:3, 1200 × 1800 px**; ảnh nguồn tối thiểu 800 × 1200 px. Nhập ảnh JPG/PNG/WebP tĩnh tối đa 5 MB; ảnh lưu và xuất là JPG/WebP. App ưu tiên tối ưu dưới 1,5 MB bằng chất lượng cao, chấp nhận tối đa 5 MB; ảnh ít chi tiết có thể nhỏ hơn 300 KB, không tăng dung lượng giả. Ảnh khác tỷ lệ được cắt giữa khi chuẩn hóa; bìa AI yêu cầu 2:3 từ đầu.
+
+**Xuất ZIP kèm bìa** có `truyen.txt`, `truyen.json`, `bia.jpg` hoặc `bia.webp`, `chapters/chuong-XXXX.txt` và `manifest.json` (trạng thái chương, thông số bìa). Truyện dịch có thêm `ban-goc.txt`. Nếu chưa có bìa và bật tự tạo, app tạo bìa trước khi xuất ZIP; không xuất ZIP thiếu ảnh. JSON riêng không chứa bytes ảnh; dùng ZIP để giữ cả ảnh. ZIP gồm các chương đã có nội dung, kể cả bản nháp, trạng thái ghi trong manifest.
+
+Tạo ảnh cần quyền/model tương ứng, có thể dùng hạn mức hoặc tính phí theo nguồn. ChatGPT dùng Responses image_generation nếu tài khoản/model được cấp quyền; Gemini dùng Gemini Image; OpenAI API dùng Images API. Không tự chuyển nguồn hay tự gọi lại sau lỗi để tránh phí lặp. Lỗi bìa được hiển thị nhưng viết truyện tiếp tục; bạn có thể bấm tạo lại. Bìa cũ được giữ khi tạo thay thế thất bại. Bìa lưu cùng thư mục truyện và được chuyển khi đổi nơi lưu. Kiểm thử API ảnh dùng phản hồi giả lập; chưa kiểm thử tạo ảnh bằng tài khoản thật.
+
+Tài liệu: https://developers.openai.com/api/docs/guides/image-generation ; https://ai.google.dev/gemini-api/docs/generate-content/image-generation
+
 ## Dịch truyện
 Vào **Dịch truyện**, chọn tiếng Trung, tiếng Anh hoặc bản convert, nhập văn phong và bảng tên/thuật ngữ (mỗi dòng `tên gốc = tên tiếng Việt`). Nhập một hoặc nhiều TXT (UTF-8, UTF-16 LE, GB18030/GBK), hoặc dán văn bản. App tách theo tiêu đề chương Trung/Anh/Việt; kiểm tra danh sách sau khi nhập. File không có tiêu đề là một chương. Chưa hỗ trợ Word, PDF, EPUB.
 

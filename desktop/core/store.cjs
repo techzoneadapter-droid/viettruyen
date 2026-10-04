@@ -25,7 +25,7 @@ class Store {
   load(id) {const p=read(this.file(id),null); if(!p) throw new Error('Không tìm thấy truyện.'); return p;}
   list() {
     const dir=path.join(this.root,'projects'); if(!fs.existsSync(dir)) return [];
-    return fs.readdirSync(dir).filter(id=>/^[a-f0-9-]{36}$/.test(id)).map(id=>{const p=this.load(id); return {id:p.id,title:p.title,genre:p.genre,target:p.target,updated:p.updated,completed:p.chapters.filter(c=>c.status==='approved').length,words:p.chapters.reduce((s,c)=>s+(c.wordCount||0),0),job:p.job};}).sort((a,b)=>b.updated.localeCompare(a.updated));
+    return fs.readdirSync(dir).filter(id=>/^[a-f0-9-]{36}$/.test(id)).map(id=>{const p=this.load(id); return {id:p.id,title:p.title,genre:p.genre,target:p.target,updated:p.updated,completed:p.chapters.filter(c=>c.status==='approved').length,words:p.chapters.reduce((s,c)=>s+(c.wordCount||0),0),job:p.job,cover:p.cover||null};}).sort((a,b)=>b.updated.localeCompare(a.updated));
   }
   save(p) {
     p.updated=new Date().toISOString(); const file=this.file(p.id);
