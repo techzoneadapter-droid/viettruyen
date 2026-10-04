@@ -1,6 +1,21 @@
 const {parseJSON}=require('./ai.cjs');const {context}=require('./store.cjs');const {z}=require('zod');
 const skeleton=z.object({bible:z.string().min(10).max(30000),arcs:z.array(z.object({title:z.string(),start:z.number().int(),end:z.number().int(),summary:z.string()})).min(1).max(40)});
-const plans=z.object({chapters:z.array(z.object({number:z.number().int(),title:z.string().max(250),plan:z.string().max(6000)}))});
+// Models may express a chapter plan as named scenes/steps instead of a string.
+// Preserve the information as readable text before validating and persisting it.
+function planText(value,depth=0){
+ if(typeof value==='string')return value;
+ if(depth>8)throw new Error('Dàn ý chương có quá nhiều tầng. Hãy bấm Tiếp tục để lập lại dàn ý.');
+ if(depth>0&&(typeof value==='number'||typeof value==='boolean'))return String(value);
+ if(Array.isArray(value)&&value.length)return value.map(v=>planText(v,depth+1)).join('\n');
+ if(value&&typeof value==='object'&&Object.keys(value).length)return Object.entries(value).map(([key,v])=>`${key}: ${planText(v,depth+1)}`).join('\n');
+ throw new Error('AI trả dàn ý chương trống hoặc không hợp lệ. Các chương đã lưu được giữ nguyên; bấm Tiếp tục để thử lại.');
+}
+const plans=z.object({chapters:z.array(z.object({number:z.number().int(),title:z.string().max(250),plan:z.preprocess(planText,z.string().trim().min(1).max(6000))})).min(1).max(10)});
+function parsePlans(text){
+ const result=plans.safeParse(parseJSON(text));
+ if(!result.success)throw new Error('AI trả dàn ý chương thiếu trường hoặc quá dài. Các chương đã lưu được giữ nguyên; bấm Tiếp tục để lập lại đợt dàn ý này.');
+ return result.data;
+}
 const reviewSchema=z.object({approved:z.boolean(),issues:z.array(z.string()),summary:z.string().min(1).max(4000),facts:z.array(z.string().max(1000)).max(30),stateUpdates:z.record(z.string(),z.string().max(2000)).default({}),openThreads:z.array(z.string().max(600)).max(30).default([])});
 const WRITER='Bạn là nhà văn viết truyện dài bằng tiếng Việt. Tuân thủ hồ sơ truyện, dàn ý, trạng thái nhân vật và dữ kiện đã duyệt. Phân biệt điều độc giả biết với điều từng nhân vật biết. Không tự đổi tên, hồi sinh nhân vật hay giải quyết mâu thuẫn bằng năng lực chưa được thiết lập. Cảnh phải tạo tiến triển, có hành động, đối thoại tự nhiên, cảm xúc và chi tiết cụ thể. Không nhắc đến AI, không thêm lời dẫn ngoài truyện.';
 class Engine{
@@ -17,7 +32,7 @@ class Engine{
    if(this.afterPlan)await this.afterPlan(p,this.active.controller.signal);
    if(!planOnly)for(let i=0;i<count&&!this.active.pause;i++){
     const n=Array.from({length:p.target},(_,j)=>j+1).find(number=>p.chapters.find(c=>c.number===number)?.status!=='approved');if(!n)break;const arc=p.arcs.find(a=>n>=a.start&&n<=a.end);let c=p.chapters.find(c=>c.number===n);
-    if(!c){const end=Math.min(arc.end,n+9);const v=plans.parse(parseJSON(await this.call(p,'Bạn lập dàn ý chương tiếng Việt. Chỉ trả JSON hợp lệ.',JSON.stringify({task:`Lập chính xác chương ${n} đến ${end}. JSON {chapters:[{number,title,plan}]}. Mỗi plan nêu cảnh, bước tiến, nhân vật biết gì và điểm kết; tránh lặp.`,context:context(p,n),ledger:p.ledger||{},threads:p.openThreads||[],nextArc:p.arcs.find(a=>a.start===arc.end+1)}),`Lập dàn ý chương ${n}–${end}`)));if(v.chapters.length!==end-n+1||v.chapters.some((x,j)=>x.number!==n+j))throw new Error('Dàn ý chương thiếu hoặc sai số thứ tự.');p.chapters.push(...v.chapters.filter(x=>!p.chapters.some(c=>c.number===x.number)).map(x=>({...x,content:'',status:'planned',wordCount:0,issues:[]})));p.chapters.sort((a,b)=>a.number-b.number);this.store.save(p);c=p.chapters.find(c=>c.number===n);}
+    if(!c){const end=Math.min(arc.end,n+9);const v=parsePlans(await this.call(p,'Bạn lập dàn ý chương tiếng Việt. Chỉ trả JSON hợp lệ.',JSON.stringify({task:`Lập chính xác chương ${n} đến ${end}. JSON {chapters:[{number,title,plan}]}. plan phải là một chuỗi văn bản, không phải object hay array; nêu cảnh, bước tiến, nhân vật biết gì và điểm kết; tránh lặp.`,context:context(p,n),ledger:p.ledger||{},threads:p.openThreads||[],nextArc:p.arcs.find(a=>a.start===arc.end+1)}),`Lập dàn ý chương ${n}–${end}`));if(v.chapters.length!==end-n+1||v.chapters.some((x,j)=>x.number!==n+j))throw new Error('Dàn ý chương thiếu hoặc sai số thứ tự.');p.chapters.push(...v.chapters.filter(x=>!p.chapters.some(c=>c.number===x.number)).map(x=>({...x,content:'',status:'planned',wordCount:0,issues:[]})));p.chapters.sort((a,b)=>a.number-b.number);this.store.save(p);c=p.chapters.find(c=>c.number===n);}
     if(this.active.pause)break;
     if(!c.content){c.content=await this.call(p,WRITER,JSON.stringify({task:`Viết chương ${n}: ${c.title}. Khoảng ${p.words} từ. Chỉ trả nội dung chương, không Markdown hay tiêu đề.`,context:context(p,n),ledger:p.ledger||{},openThreads:p.openThreads||[]}),`Viết chương ${n}`,true);c.wordCount=c.content.trim().split(/\s+/u).length;c.status='draft';this.store.save(p);}
     if(this.active.pause)break;let review;
@@ -33,4 +48,4 @@ class Engine{
   }catch(e){p.job={...p.job,status:'error',message:e.name==='AbortError'?'Đã dừng và giữ dữ liệu đã lưu.':e.message};}finally{this.store.save(p);this.active=null;this.emit({type:'finished',project:p.id,message:p.job.message});}return p;
  }
 }
-module.exports={Engine,reviewSchema};
+module.exports={Engine,reviewSchema,parsePlans};
