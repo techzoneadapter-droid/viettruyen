@@ -14,7 +14,7 @@
 7. Xuất TXT để dùng cho app truyện/video hoặc xuất JSON để sao lưu; Nhập sao lưu tạo một bản truyện riêng.
 
 ## Cập nhật
-Vào **Cập nhật ứng dụng → Kiểm tra cập nhật → Tải bản mới → Cài và khởi động lại**.
+Vào **Cập nhật ứng dụng → Cập nhật ngay**. Một lần bấm sẽ kiểm tra, tải và cài bản mới, rồi khởi động lại app. Bạn cũng có thể dùng các nút kiểm tra/tải/cài riêng nếu muốn xem bản mới trước.
 
 Mỗi lần code trên `main` thay đổi, GitHub Actions build NSIS, chạy kiểm thử, cài bản Windows để kiểm tra app, và phát hành bản mới với phiên bản riêng (`major.minor.github_run_number`). Chỉ bản phát hành có installer + `latest.yml` mới được app dùng để cập nhật; thay đổi README và `mumu-upstream` không tạo bản desktop mới. Thông tin tài khoản và truyện không nằm trong thư mục cài đặt. App sao lưu truyện trước khi cài bản mới. Không cập nhật giữa tác vụ viết.
 
