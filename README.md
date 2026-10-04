@@ -13,6 +13,13 @@
 6. Xem bản thảo, dàn ý, trạng thái nhân vật, các tuyến đang mở. AI kiểm tra không thay thế biên tập viên.
 7. Xuất TXT để dùng cho app truyện/video hoặc xuất JSON để sao lưu; Nhập sao lưu tạo một bản truyện riêng.
 
+## Dịch truyện
+Vào **Dịch truyện**, chọn tiếng Trung, tiếng Anh hoặc bản convert, nhập văn phong và bảng tên/thuật ngữ (mỗi dòng `tên gốc = tên tiếng Việt`). Nhập một hoặc nhiều TXT (UTF-8, UTF-16 LE, GB18030/GBK), hoặc dán văn bản. App tách theo tiêu đề chương Trung/Anh/Việt; kiểm tra danh sách sau khi nhập. File không có tiêu đề là một chương. Chưa hỗ trợ Word, PDF, EPUB.
+
+Bấm **Tiếp tục dịch** để dịch theo đợt bằng model đã chọn. Chương dài chia thành phần nhỏ, lưu bản dịch trước khi kiểm tra. Hết hạn mức/mất mạng thì giữ phần đã lưu; chạy tiếp không dịch lại phần đã hoàn tất. Tên và thuật ngữ được giữ xuyên các phần; mâu thuẫn tên hoặc bản dịch không đạt kiểm tra sẽ dừng để bạn đối chiếu. Bản gốc và bản dịch hiển thị cạnh nhau. **Lưu & duyệt chương** xác nhận thủ công toàn bộ chương, kể cả khi bản tự động còn thiếu phần.
+
+Xuất bản dịch TXT hoặc sao lưu cả gốc và bản dịch JSON. Dữ liệu dịch nằm trong thư mục `translations` ở nơi lưu truyện đã chọn, được chuyển và sao lưu khi cập nhật. Dịch/biên tập giữ tình tiết và nghĩa gốc theo yêu cầu gửi cho AI; chưa kiểm chứng chất lượng bằng tài khoản AI thật, AI kiểm tra không thay thế người duyệt.
+
 ## Nơi lưu truyện
 Vào **Nơi lưu truyện → Đổi thư mục lưu truyện**, chọn thư mục trống trên ổ đĩa mong muốn. App sao chép và kiểm tra truyện, bộ nhớ, bản sao lưu và ý tưởng rồi mới áp dụng; bản gốc được giữ nguyên. Không đổi giữa tác vụ. Thư mục đã chọn được giữ sau khi đóng/mở app và cập nhật. API key/token vẫn ở kho mã hóa hệ điều hành. Nếu dùng ổ rời, cần kết nối ổ trước khi mở app.
 
