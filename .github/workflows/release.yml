@@ -25,17 +25,27 @@ jobs:
         run: |
           $base = (Get-Content package.json | ConvertFrom-Json).version.Split(".")
           npm version "$($base[0]).$($base[1]).${{ github.run_number }}" --no-git-tag-version
-      - name: Create release tag
+      - name: Build installer
+        run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Install and test Windows app
         shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\*.exe | Select-Object -First 1).FullName
+          $install = Join-Path $env:RUNNER_TEMP "VietTruyenInstalled"
+          Start-Process -FilePath $setup -ArgumentList "/S", "/D=$install" -Wait
+          $env:VIETTRUYEN_SMOKE_EXE = Join-Path $install "VietTruyen.exe"
+          npm run test:desktop
+      - name: Publish tested installer and updater metadata
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
           git tag "v$version"
           git push origin "v$version"
-      - name: Publish installer and updater metadata
-        run: npm run release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          gh release create "v$version" dist/*.exe dist/*.blockmap dist/latest.yml --title "Việt Truyện $version" --notes "Bản Windows tiếng Việt. Đã kiểm thử cài đặt, lưu dữ liệu, kết nối và giao diện cập nhật."
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -44,3 +54,4 @@ jobs:
             dist/*.exe
             dist/*.blockmap
             dist/latest.yml
+            dist/ui-*.png

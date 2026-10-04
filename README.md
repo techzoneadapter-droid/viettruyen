@@ -1,0 +1,47 @@
+# Việt Truyện
+
+Ứng dụng Windows tiếng Việt để sáng tác truyện dài từ 1 đến 1.000 chương, lưu dữ liệu riêng trên máy và cập nhật ngay trong app.
+
+**Tải bản cài:** https://github.com/techzoneadapter-droid/viettruyen/releases/latest
+
+## Dùng lần đầu
+1. Cài `VietTruyen-Setup-*.exe` (Windows 10/11 64-bit).
+2. Mở **Kết nối AI**. Chọn ChatGPT và đăng nhập bằng trình duyệt, hoặc nhập Gemini/OpenAI API key.
+3. Bấm **Lấy danh sách model**, chọn model rồi **Lưu kết nối** và **Thử kết nối**. Việc thử kết nối có sử dụng hạn mức AI.
+4. **Tạo truyện mới**, nhập ý tưởng, thể loại, văn phong, số chương và số từ mỗi chương.
+5. Tạo hồ sơ và dàn ý quyển để xem hướng phát triển trước; có thể sửa hồ sơ. Bấm **Viết đợt đầu** hoặc **Tiếp tục viết**, nên bắt đầu 5 chương.
+6. Xem bản thảo, dàn ý, trạng thái nhân vật, các tuyến đang mở. AI kiểm tra không thay thế biên tập viên.
+7. Xuất TXT để dùng cho app truyện/video hoặc xuất JSON để sao lưu; Nhập sao lưu tạo một bản truyện riêng.
+
+## Cập nhật
+Vào **Cập nhật ứng dụng → Kiểm tra cập nhật → Tải bản mới → Cài và khởi động lại**.
+
+Mỗi lần code trên `main` thay đổi, GitHub Actions build NSIS, chạy kiểm thử, cài bản Windows để kiểm tra app, và phát hành bản mới với phiên bản riêng (`major.minor.github_run_number`). Chỉ bản phát hành có installer + `latest.yml` mới được app dùng để cập nhật; thay đổi README và `mumu-upstream` không tạo bản desktop mới. Thông tin tài khoản và truyện không nằm trong thư mục cài đặt. App sao lưu truyện trước khi cài bản mới. Không cập nhật giữa tác vụ viết.
+
+## Kết nối và hạn mức
+- ChatGPT: luồng OAuth chính thức Sign in with ChatGPT cho ứng dụng nguồn mở chạy local; kiểm tra chữ ký ID token, nonce, state, PKCE và quyền dùng gói. Model lấy từ tài khoản. Không dùng cookie hay backend-api. Nếu tài khoản chưa được cấp quyền, thông báo lỗi để bạn dùng nguồn khác.
+- Gemini/OpenAI API: nhập key của bạn. Gemini có thể có tầng miễn phí tùy model và hạn mức. API trả phí tính theo sử dụng. App không tự chọn nguồn trả phí thay thế.
+- Chưa kiểm thử bằng tài khoản ChatGPT/Gemini thật hoặc tạo đủ 1.000 chương. Các bài kiểm thử AI dùng phản hồi giả lập để kiểm tra lưu dữ liệu, lỗi, kiểm duyệt và tiếp tục; không chứng minh chất lượng văn học.
+
+## Viết truyện dài
+Hồ sơ toàn truyện → quyển → dàn ý từng đợt 10 chương → viết → kiểm tra → sửa một lần nếu có lỗi → lưu bộ nhớ. Một chương không đạt sẽ dừng đợt cho bạn xem lại. Mỗi lần gọi AI nhận hồ sơ, trạng thái mới nhất, ba ký ức gần nhất, đoạn kết chương trước và ký ức cũ được tìm theo từ khóa. Bộ nhớ hiện dùng tìm kiếm từ khóa; không phải toàn bộ hệ thống embedding của MuMu.
+
+App giữ tóm tắt, dữ kiện, trạng thái nhân vật và các tuyến đang mở. Sửa nội dung chương yêu cầu kiểm tra lại chương đó và chương sau để bộ nhớ không giữ dữ kiện lỗi. Hết hạn mức hoặc mất mạng sẽ giữ các bước đã lưu, bấm Tiếp tục để chạy tiếp. Độ dài chương là yêu cầu gửi cho AI, cần kiểm tra thực tế.
+
+## Dữ liệu và bảo mật
+Truyện: `%APPDATA%\VietTruyen\data\projects`. Sao lưu tự động trước đợt viết và cập nhật: `%APPDATA%\VietTruyen\data\backups`. Mỗi lần lưu còn giữ `project.json.bak`. Kết nối được mã hóa bằng Electron safeStorage (Windows DPAPI); key/token không trả về giao diện hay ghi trong sao lưu truyện. Không xóa các thư mục này nếu muốn giữ dữ liệu.
+
+Renderer bật sandbox, tắt Node integration và có CSP. IPC giới hạn nguồn, lệnh và kiểm tra dữ liệu. Bản cài hiện chưa có chứng chỉ ký thương mại. App chỉ lấy cập nhật từ repo này; checksum của electron-updater kiểm tra tính toàn vẹn file tải.
+
+## MuMuAINovel
+Mã nguồn gốc giữ nguyên tại `mumu-upstream/`, phiên bản `749186d40894b40b9fd0589791fec243d42e60c9`, để dùng hoặc phát triển bản web MuMu đầy đủ. Desktop Việt Truyện là lớp giao diện tiếng Việt và engine local riêng; không chạy backend Python/PostgreSQL của MuMu và chưa chuyển toàn bộ chức năng MuMu sang desktop. Nguồn: https://github.com/xiamuceer-j/MuMuAINovel. GPL-3.0, xem LICENSE và NOTICE.md.
+
+## Phát triển
+Node.js 24:
+```sh
+npm ci
+npm test
+npm start
+npm run dist:win
+```
+Build đầy đủ Windows nên chạy trên Windows/GitHub Actions. `npm run test:desktop` dùng bản app đã đóng gói trong `dist/win-unpacked`. Không đưa key/token vào Git. Để phát hành thủ công: Actions → Build and release Windows → Run workflow.

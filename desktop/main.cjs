@@ -2,7 +2,7 @@ const {app,BrowserWindow,ipcMain,shell,dialog,safeStorage}=require('electron');
 const path=require('node:path');const fs=require('node:fs');const {pathToFileURL}=require('node:url');const {z}=require('zod');
 const {Store,atomic,read}=require('./core/store.cjs');const {AI}=require('./core/ai.cjs');const {Engine}=require('./core/engine.cjs');const {ChatGPTAuth}=require('./core/auth.cjs');
 const settingsSchema=z.object({provider:z.enum(['chatgpt','gemini','openai']),model:z.string().max(200),geminiKey:z.string().max(500).optional(),openaiKey:z.string().max(500).optional()});
-app.setName('VietTruyen');let win,store,engine,auth,vault,updater;let update={status:'idle',message:'Bấm Kiểm tra cập nhật để tìm phiên bản mới.'};
+app.setName('VietTruyen');if(process.env.VIETTRUYEN_TEST_USER_DATA)app.setPath('userData',process.env.VIETTRUYEN_TEST_USER_DATA);let win,store,engine,auth,vault,updater;let update={status:'idle',message:'Bấm Kiểm tra cập nhật để tìm phiên bản mới.'};
 function emit(event){if(win&&!win.isDestroyed())win.webContents.send('event',event);}
 class Vault{
  constructor(file){this.file=file;this.value={};if(fs.existsSync(file)){if(!safeStorage.isEncryptionAvailable())throw new Error('Không mở được kho thông tin kết nối được mã hóa.');this.value=JSON.parse(safeStorage.decryptString(Buffer.from(read(file,'').data,'base64')));}}
