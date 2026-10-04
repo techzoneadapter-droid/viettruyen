@@ -25,12 +25,19 @@ jobs:
         run: |
           $base = (Get-Content package.json | ConvertFrom-Json).version.Split(".")
           npm version "$($base[0]).$($base[1]).${{ github.run_number }}" --no-git-tag-version
+      - name: Create release tag
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          git tag "v$version"
+          git push origin "v$version"
       - name: Publish installer and updater metadata
         run: npm run release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: VietTruyen-Windows
           path: |
