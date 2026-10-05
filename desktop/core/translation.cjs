@@ -26,7 +26,7 @@ class Translator{
  async call(p,instructions,input,message){this.emit({type:'translation:phase',project:p.id,message});const r=await this.ai.generate(instructions,JSON.stringify(input),{signal:this.active.controller.signal});p.usage.calls++;p.usage.input+=r.usage.input||0;p.usage.output+=r.usage.output||0;this.store.save(p);return parseJSON(r.text);}
  async run(id,count){
   if(this.active)throw new Error('Đang dịch một truyện khác.');if(!Number.isInteger(count)||count<1||count>1000)throw new Error('Số chương không hợp lệ.');
-  const p=this.store.load(id);this.store.backup(p);this.active={controller:new AbortController(),pause:false};p.job={status:'running',message:'Chuẩn bị dịch'};this.store.save(p);
+  const p=this.store.load(id);this.store.backup(p);this.active={id,controller:new AbortController(),pause:false};p.job={status:'running',message:'Chuẩn bị dịch'};this.store.save(p);
   try{for(const c of p.chapters.filter(x=>x.status!=='approved').slice(0,count)){
    if(this.active.pause)break;
    for(let i=0;i<c.segments.length;i++){
