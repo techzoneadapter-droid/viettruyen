@@ -3,11 +3,11 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { z } = require('zod');
 const projectInput = z.object({title:z.string().trim().min(1).max(160),genre:z.string().max(160),premise:z.string().max(20000),style:z.string().max(4000),target:z.number().int().min(1).max(1000),words:z.number().int().min(300).max(6000)});
-function atomic(file, value) {
+function atomic(file, value, {compact=false}={}) {
   fs.mkdirSync(path.dirname(file), {recursive:true});
   const temp = file + '.tmp';
   const fd = fs.openSync(temp, 'w', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(value, null, 2)); fs.fsyncSync(fd); } finally {fs.closeSync(fd);}
+  try { fs.writeFileSync(fd, JSON.stringify(value, null, compact?undefined:2)); fs.fsyncSync(fd); } finally {fs.closeSync(fd);}
   fs.renameSync(temp, file);
 }
 function read(file, fallback) {
@@ -16,21 +16,24 @@ function read(file, fallback) {
 }
 function validateId(id) { if(!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Mã truyện không hợp lệ.'); return id; }
 class Store {
-  constructor(root) {this.root=root; fs.mkdirSync(root,{recursive:true});}
+  constructor(root) {this.summaries=new Map();this.root=root; fs.mkdirSync(root,{recursive:true});}
   file(id) {return path.join(this.root,'projects',validateId(id),'project.json');}
   create(input) {
     const p={...projectInput.parse(input),id:randomUUID(),created:new Date().toISOString(),updated:new Date().toISOString(),bible:'',synopsis:'',arcs:[],chapters:[],memories:[],job:null,usage:{input:0,output:0,calls:0},schema:1};
     this.save(p); return p;
   }
-  load(id) {const p=read(this.file(id),null); if(!p) throw new Error('Không tìm thấy truyện.'); p.synopsis=typeof p.synopsis==='string'?p.synopsis:''; return p;}
+  load(id) {const p=read(this.file(id),null); if(!p) throw new Error('Không tìm thấy truyện.'); p.synopsis=typeof p.synopsis==='string'?p.synopsis:''; this.cacheSummary(p);return p;}
+  summaryKey(id){const stat=fs.statSync(this.file(id),{bigint:true});return `${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}:${stat.ino}`;}
+  cacheSummary(p){const value={id:p.id,title:p.title,genre:p.genre,target:p.target,updated:p.updated,completed:p.chapters.filter(c=>c.status==='approved').length,words:p.chapters.reduce((s,c)=>s+(c.wordCount||0),0),job:p.job,cover:p.cover||null};this.summaries.set(p.id,{key:this.summaryKey(p.id),value:structuredClone(value)});}
+  progress(id){const key=this.summaryKey(id),entry=this.summaries.get(id);if(!entry||entry.key!==key)this.load(id);return structuredClone(this.summaries.get(id).value);}
   list() {
     const dir=path.join(this.root,'projects'); if(!fs.existsSync(dir)) return [];
-    return fs.readdirSync(dir).filter(id=>/^[a-f0-9-]{36}$/.test(id)).map(id=>{const p=this.load(id); return {id:p.id,title:p.title,genre:p.genre,target:p.target,updated:p.updated,completed:p.chapters.filter(c=>c.status==='approved').length,words:p.chapters.reduce((s,c)=>s+(c.wordCount||0),0),job:p.job,cover:p.cover||null};}).sort((a,b)=>b.updated.localeCompare(a.updated));
+    return fs.readdirSync(dir).filter(id=>/^[a-f0-9-]{36}$/.test(id)).map(id=>this.progress(id)).sort((a,b)=>b.updated.localeCompare(a.updated));
   }
   save(p) {
     p.updated=new Date().toISOString(); const file=this.file(p.id);
     if(fs.existsSync(file)) fs.copyFileSync(file,file+'.bak');
-    atomic(file,p); return p;
+    atomic(file,p,{compact:true});this.cacheSummary(p);return p;
   }
   backup(p) {atomic(path.join(this.root,'backups',`${p.id}-${Date.now()}.json`),p);}
   import(value) {

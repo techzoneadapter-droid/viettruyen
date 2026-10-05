@@ -11,7 +11,7 @@ class JobQueue{
   this.save();
  }
  file(){return path.join(this.store.root,'jobs.json');}
- snapshot(){return {limit:this.limit,items:this.items.map(x=>{const p=this.store.load(x.id),job=p.job||{};return {...x,totalCompleted:p.chapters.filter(c=>c.status==='approved').length,target:p.target,currentChapter:job.currentChapter??null,requested:job.requested??x.count,completed:job.completed??0,remaining:job.remaining??x.count};}),active:this.running.size};}
+ snapshot(){return {limit:this.limit,items:this.items.map(x=>{const p=this.store.progress(x.id),job=p.job||{};return {...x,totalCompleted:p.completed,target:p.target,currentChapter:job.currentChapter??null,requested:job.requested??x.count,completed:job.completed??0,remaining:job.remaining??x.count};}),active:this.running.size};}
  save(){atomic(this.file(),{limit:this.limit,items:this.items});this.emit({type:'queue',...this.snapshot()});}
  busy(){return this.running.size>0||this.items.some(x=>x.status==='queued');}
  locked(id){return this.running.has(id)||this.items.some(x=>x.id===id&&x.status==='queued');}
@@ -39,7 +39,7 @@ class JobQueue{
   if(this.stopping)return;
   while(this.running.size<this.limit){
    const item=this.items.find(x=>x.status==='queued');if(!item)break;
-   item.status='running';const engine=this.factory(event=>{if(event.message)item.message=errorText(event.message);if(event.type==='saved'){const job=this.store.load(item.id).job;item.remaining=job.remaining;item.completed=job.completed;}this.emit(event);if(event.type!=='delta')this.save();});
+   item.status='running';const engine=this.factory(event=>{if(event.message)item.message=errorText(event.message);if(event.type==='saved'){const job=this.store.progress(item.id).job;item.remaining=job.remaining;item.completed=job.completed;}this.emit(event);if(event.type!=='delta')this.save();});
    this.running.set(item.id,engine);this.save();
    Promise.resolve().then(()=>item.stopRequested?this.store.load(item.id):engine.run(item.id,item.count,{planOnly:item.planOnly})).then(p=>{
     if(p.job.blocked)this.pause(undefined,false);
