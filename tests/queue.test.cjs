@@ -23,3 +23,20 @@ test('hard quota pauses pending queue rather than repeating requests on each sto
 test('interrupted stream is saved separately and never treated as completed chapter',async()=>{const f=fixture();try{const p=f.create('Bị ngắt',1);p.chapters=[{number:1,title:'Chương 1',plan:'Một cảnh',content:'',status:'planned',wordCount:0,issues:[]}];f.store.save(p);const engine=new Engine(f.store,{generate:async()=>{const e=new Error('Kết nối bị ngắt');e.partialText='Một phần chưa hoàn tất';throw e;}});await engine.run(p.id,1);const q=f.store.load(p.id);assert.equal(q.chapters[0].content,'');assert.equal(q.chapters[0].interruptedDraft,'Một phần chưa hoàn tất');assert.equal(q.memories.length,0);assert.equal(q.job.remaining,1);assert.equal(q.job.status,'error');}finally{f.done();}});
 test('restart after final chapter checkpoint never schedules an extra batch',()=>{const f=fixture();try{const p=f.create('Đã xong đợt',10);p.job={status:'running',remaining:0,completed:5,requested:5};f.store.save(p);fs.writeFileSync(path.join(f.root,'jobs.json'),JSON.stringify({limit:2,items:[{id:p.id,title:p.title,count:5,status:'running',planOnly:false}]}));const restored=new JobQueue(f.store,()=>{throw new Error('Must not start');});assert.equal(restored.snapshot().items.length,0);assert.equal(f.store.load(p.id).job.status,'completed');}finally{f.done();}});
 test('default AI transport uses host fetch at request time for installed-app mock injection',async()=>{const original=global.fetch;const ai=new AI(()=>({provider:'openai',model:'mock',openaiKey:'fake'}),{});try{global.fetch=async()=>stream('Kết nối giả lập');assert.equal((await ai.generate('Viết','Truyện')).text,'Kết nối giả lập');}finally{global.fetch=original;}});
+test('sixteen real story workers run concurrently with isolated sequential chapters and persistent cap',async()=>{
+ const f=fixture();try{
+  const projects=Array.from({length:18},(_,i)=>f.create('Truyện '+(i+1),2));let active=0,peak=0;const perStory=new Map();
+  const ai={generate:async(_,input)=>{const v=JSON.parse(input),title=v.context?.title||v.title;assert.equal(perStory.get(title)||0,0,'Same story must never call AI concurrently');perStory.set(title,1);active++;peak=Math.max(peak,active);await tick();const value=generated(input);active--;perStory.set(title,0);return value;}};
+  const queue=new JobQueue(f.store,emit=>new Engine(f.store,ai,emit));queue.setLimit(16);for(const p of projects)queue.enqueue(p.id,2);assert.equal(queue.snapshot().active,16);assert.equal(queue.snapshot().maxParallel,16);await settle(queue);assert.equal(peak,16);
+  for(const p of projects){const saved=f.store.load(p.id);assert.equal(saved.chapters.filter(c=>c.status==='approved').length,2);assert.ok(saved.chapters.every(c=>c.content.includes(p.title)));assert.deepEqual(saved.memories.map(m=>m.chapter),[1,2]);}
+  assert.equal(new JobQueue(f.store,()=>{}).snapshot().limit,16);for(const bad of [0,17,1.5,NaN])assert.throws(()=>queue.setLimit(bad),/1 đến 16/);
+ }finally{f.done();}
+});
+test('reducing concurrency keeps active batches intact and starts pending stories under the new cap',async()=>{
+ const f=fixture();try{
+  const projects=Array.from({length:8},(_,i)=>f.create('Đợt '+i,1)),releases=[];let calls=0;
+  const queue=new JobQueue(f.store,()=>({busy:()=>true,run:async id=>{calls++;await new Promise(resolve=>releases.push(resolve));const p=f.store.load(id);p.job={...p.job,status:'completed',remaining:0};return f.store.save(p);},pause:()=>assert.fail('Must not pause'),abort:()=>assert.fail('Must not abort')}));
+  queue.setLimit(6);for(const p of projects)queue.enqueue(p.id,1);await tick();assert.equal(calls,6);queue.setLimit(2);assert.equal(queue.snapshot().active,6);
+  for(let i=0;i<4;i++){releases[i]();await tick();}assert.equal(calls,6);releases[4]();await tick();assert.equal(calls,7);assert.equal(queue.snapshot().active,2);releases[5]();await tick();assert.equal(calls,8);assert.equal(queue.snapshot().active,2);releases[6]();releases[7]();await settle(queue);assert.equal(new JobQueue(f.store,()=>{}).snapshot().limit,2);
+ }finally{f.done();}
+});

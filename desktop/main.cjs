@@ -1,5 +1,5 @@
 const {errorText}=require('./core/messages.js');
-const {JobQueue}=require('./core/queue.cjs');
+const {JobQueue,MAX_PARALLEL}=require('./core/queue.cjs');
 const {app,BrowserWindow,ipcMain,shell,dialog,safeStorage}=require('electron');
 const path=require('node:path');const fs=require('node:fs');const {pathToFileURL}=require('node:url');const {z}=require('zod');
 const {Store,atomic,read}=require('./core/store.cjs');const {AI}=require('./core/ai.cjs');const {Engine}=require('./core/engine.cjs');const {ChatGPTAuth}=require('./core/auth.cjs');
@@ -66,7 +66,7 @@ app.whenReady().then(()=>{
   c.plan=v.plan;return store.save(p);
  });
  handle('jobs:list',()=>queue.snapshot());
- handle('jobs:limit',value=>queue.setLimit(z.number().int().min(1).max(4).parse(value)));
+ handle('jobs:limit',value=>queue.setLimit(z.number().int().min(1).max(MAX_PARALLEL).parse(value)));
  handle('jobs:resume',id=>{id=z.string().parse(id);if(coverOwner?.kind==='story'&&coverOwner.id===id)throw new Error('Chờ ảnh của truyện này hoàn tất.');return queue.resume(id);});
  handle('jobs:remove',id=>queue.remove(z.string().parse(id)));
  handle('jobs:start',input=>{const v=z.object({id:z.string(),count:z.number().int().min(1).max(1000),planOnly:z.boolean().default(false)}).parse(input);if(coverOwner?.kind==='story'&&coverOwner.id===v.id)throw new Error('Chờ ảnh của truyện này hoàn tất.');return queue.enqueue(v.id,v.count,{planOnly:v.planOnly});});

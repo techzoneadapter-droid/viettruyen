@@ -1,21 +1,22 @@
 const path=require('node:path');
 const {atomic,read}=require('./store.cjs');
 const {errorText}=require('./messages.js');
+const MAX_PARALLEL=16;
 class JobQueue{
  constructor(store,factory,emit=()=>{}){
   Object.assign(this,{store,factory,emit,running:new Map(),stopping:false});
-  const saved=read(this.file(),{limit:2,items:[]});this.limit=Math.max(1,Math.min(4,saved.limit||2));
+  const saved=read(this.file(),{limit:2,items:[]});this.limit=Math.max(1,Math.min(MAX_PARALLEL,Number.isInteger(saved.limit)?saved.limit:2));
   this.items=(saved.items||[]).filter(x=>{const p=store.load(x.id);if(p.job?.status==='completed')return false;if(!x.planOnly&&p.job?.remaining===0){p.job={...p.job,status:'completed',message:'Đợt viết đã hoàn tất tại điểm lưu cuối.'};store.save(p);return false;}return true;}).map(x=>({...x,status:'paused',message:'App đã đóng. Bấm Tiếp tục để chạy phần còn lại.'}));
   // A chapter checkpoint is authoritative if the process closed before queue metadata.
   for(const item of this.items){const p=store.load(item.id);if(p.job?.remaining!==undefined&&item.status==='paused'){item.count=p.job.remaining||item.count;item.remaining=item.count;}}
   this.save();
  }
  file(){return path.join(this.store.root,'jobs.json');}
- snapshot(){return {limit:this.limit,items:this.items.map(x=>{const p=this.store.progress(x.id),job=p.job||{};return {...x,totalCompleted:p.completed,target:p.target,currentChapter:job.currentChapter??null,requested:job.requested??x.count,completed:job.completed??0,remaining:job.remaining??x.count};}),active:this.running.size};}
+ snapshot(){return {limit:this.limit,maxParallel:MAX_PARALLEL,items:this.items.map(x=>{const p=this.store.progress(x.id),job=p.job||{};return {...x,totalCompleted:p.completed,target:p.target,currentChapter:job.currentChapter??null,requested:job.requested??x.count,completed:job.completed??0,remaining:job.remaining??x.count};}),active:this.running.size};}
  save(){atomic(this.file(),{limit:this.limit,items:this.items});this.emit({type:'queue',...this.snapshot()});}
  busy(){return this.running.size>0||this.items.some(x=>x.status==='queued');}
  locked(id){return this.running.has(id)||this.items.some(x=>x.id===id&&x.status==='queued');}
- setLimit(value){if(!Number.isInteger(value)||value<1||value>4)throw new Error('Chọn từ 1 đến 4 truyện chạy đồng thời.');this.limit=value;this.save();this.pump();return this.snapshot();}
+ setLimit(value){if(!Number.isInteger(value)||value<1||value>MAX_PARALLEL)throw new Error(`Chọn từ 1 đến ${MAX_PARALLEL} truyện chạy đồng thời.`);this.limit=value;this.save();this.pump();return this.snapshot();}
  enqueue(id,count=5,{planOnly=false}={}){
   if(this.stopping)throw new Error('Đang dừng các tác vụ. Chờ hoàn tất trước khi chạy tiếp.');
   if(this.locked(id))throw new Error('Truyện này đã chạy hoặc đã nằm trong hàng đợi.');
@@ -49,4 +50,4 @@ class JobQueue{
   }
  }
 }
-module.exports={JobQueue};
+module.exports={JobQueue,MAX_PARALLEL};
