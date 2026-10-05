@@ -18,7 +18,7 @@ function parsePlans(text){
  return result.data;
 }
 const reviewSchema=z.object({approved:z.boolean(),issues:z.array(z.string()),summary:z.string().min(1).max(4000),facts:z.array(z.string().max(1000)).max(30),stateUpdates:z.record(z.string(),z.string().max(2000)).default({}),openThreads:z.array(z.string().max(600)).max(30).default([])});
-const WRITER='Bạn là nhà văn viết truyện dài bằng tiếng Việt. Tuân thủ hồ sơ truyện, dàn ý, trạng thái nhân vật và dữ kiện đã duyệt. Phân biệt điều độc giả biết với điều từng nhân vật biết. Không tự đổi tên, hồi sinh nhân vật hay giải quyết mâu thuẫn bằng năng lực chưa được thiết lập. Cảnh phải tạo tiến triển, có hành động, đối thoại tự nhiên, cảm xúc và chi tiết cụ thể. Không nhắc đến AI, không thêm lời dẫn ngoài truyện.';
+const WRITER='Bạn là nhà văn viết truyện dài bằng tiếng Việt. Tuân thủ hồ sơ truyện, dàn ý, trạng thái nhân vật và dữ kiện đã duyệt. Phân biệt điều độc giả biết với điều từng nhân vật biết. Không tự đổi tên, hồi sinh nhân vật hay giải quyết mâu thuẫn bằng năng lực chưa được thiết lập. Cảnh phải tạo tiến triển, có hành động, đối thoại tự nhiên, cảm xúc và chi tiết cụ thể. Xây dựng truyện nguyên bản; không sao chép nhân vật, thế giới đặc trưng, chuỗi tình tiết hoặc câu văn từ tác phẩm có sẵn. Không nhắc đến AI, không thêm lời dẫn ngoài truyện.';
 class Engine{
  constructor(store,ai,emit=()=>{}){Object.assign(this,{store,ai,emit,active:null});}
  busy(){return !!this.active;}
