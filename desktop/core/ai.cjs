@@ -78,9 +78,17 @@ class AI {
           body:JSON.stringify({systemInstruction:{parts:[{text:instructions}]},contents:[{role:'user',parts:[{text:input}]}],...(budget>0?{generationConfig:{maxOutputTokens:budget}}:{})})
         });
       } else {
-        const token=s.provider==='chatgpt'?await this.auth.access():s.openaiKey;
+        let token=s.provider==='chatgpt'?await this.auth.access():s.openaiKey;
         if(!token) throw new Error('Chưa kết nối AI.');
-        response=await this.fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},signal:combined,body:JSON.stringify({model:s.model,instructions,input:[{role:'user',content:input}],store:false,stream:true,...(budget>0?{max_output_tokens:budget}:{})})});
+        const send=accessToken=>this.fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},signal:combined,body:JSON.stringify({model:s.model,instructions,input:[{role:'user',content:input}],store:false,stream:true,...(budget>0?{max_output_tokens:budget}:{})})});
+        response=await send(token);
+        if(response.status===401&&s.provider==='chatgpt'){
+          this.onLimits(scope,s,{...responseLimits(response),status:'error'});
+          if(combined.aborted)throw combined.reason;
+          await response.body?.cancel();
+          token=await this.auth.access({force:true,rejectedToken:token});
+          response=await send(token);
+        }
       }
       const observed=responseLimits(response);
       if(!response.ok) {

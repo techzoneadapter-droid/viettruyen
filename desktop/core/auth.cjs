@@ -36,8 +36,8 @@ class ChatGPTAuth {
  }
  cancel(){this.pending?.cancel();}
  logout(){this.cancel();this.vault.set('chatgpt',null);return this.status();}
- async access(){
-  const c=this.vault.get('chatgpt');if(!c)throw new Error('Hãy đăng nhập ChatGPT trước.');if(Date.now()<c.expires_at-90000)return c.access_token;if(this.refreshing)return this.refreshing;
+ async access({force=false,rejectedToken}={}){
+  const c=this.vault.get('chatgpt');if(!c)throw new Error('Hãy đăng nhập ChatGPT trước.');if(this.refreshing)return this.refreshing;if(rejectedToken&&c.access_token!==rejectedToken)force=false;if(!force&&Date.now()<c.expires_at-90000)return c.access_token;
   this.refreshing=(async()=>{const r=await this.fetch('https://auth.openai.com/api/accounts/oauth/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'refresh_token',client_id:c.client_id,refresh_token:c.refresh_token,resource:'https://api.openai.com/v1'}),signal:AbortSignal.timeout(30000)});if(!r.ok)throw new Error('Phiên ChatGPT hết hạn. Hãy đăng nhập lại.');const t=await r.json(),scopes=t.scope?t.scope.split(' '):c.scopes;if(!scopes.includes('chatgpt.tokens.use.direct'))throw new Error('Quyền dùng gói ChatGPT không còn được cấp.');this.vault.set('chatgpt',{...c,...t,scopes,expires_at:Date.now()+(t.expires_in||3600)*1000});return t.access_token;})();try{return await this.refreshing;}finally{this.refreshing=null;}
  }
 }
