@@ -5,9 +5,9 @@ class JobQueue{
  constructor(store,factory,emit=()=>{}){
   Object.assign(this,{store,factory,emit,running:new Map(),stopping:false});
   const saved=read(this.file(),{limit:2,items:[]});this.limit=Math.max(1,Math.min(4,saved.limit||2));
-  this.items=(saved.items||[]).filter(x=>store.load(x.id).job?.status!=='completed').map(x=>({...x,status:'paused',message:'App đã đóng. Bấm Tiếp tục để chạy phần còn lại.'}));
+  this.items=(saved.items||[]).filter(x=>{const p=store.load(x.id);if(p.job?.status==='completed')return false;if(!x.planOnly&&p.job?.remaining===0){p.job={...p.job,status:'completed',message:'Đợt viết đã hoàn tất tại điểm lưu cuối.'};store.save(p);return false;}return true;}).map(x=>({...x,status:'paused',message:'App đã đóng. Bấm Tiếp tục để chạy phần còn lại.'}));
   // A chapter checkpoint is authoritative if the process closed before queue metadata.
-  for(const item of this.items){const p=store.load(item.id);if(p.job?.remaining!==undefined&&item.status==='paused')item.count=p.job.remaining||item.count;}
+  for(const item of this.items){const p=store.load(item.id);if(p.job?.remaining!==undefined&&item.status==='paused'){item.count=p.job.remaining||item.count;item.remaining=item.count;}}
   this.save();
  }
  file(){return path.join(this.store.root,'jobs.json');}
