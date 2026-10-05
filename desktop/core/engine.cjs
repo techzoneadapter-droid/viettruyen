@@ -1,3 +1,4 @@
+const {setTimeout:retrySleep}=require('node:timers/promises');
 const {errorText}=require('./messages.js');
 const {parseJSON}=require('./ai.cjs');const {context}=require('./store.cjs');const {z}=require('zod');
 const skeleton=z.object({bible:z.string().min(10).max(30000),arcs:z.array(z.object({title:z.string(),start:z.number().int(),end:z.number().int(),summary:z.string()})).min(1).max(40)});
@@ -20,15 +21,21 @@ function parsePlans(text){
 const reviewSchema=z.object({approved:z.boolean(),issues:z.array(z.string()),summary:z.string().min(1).max(4000),facts:z.array(z.string().max(1000)).max(30),stateUpdates:z.record(z.string(),z.string().max(2000)).default({}),openThreads:z.array(z.string().max(600)).max(30).default([])});
 const WRITER='Bạn là nhà văn viết truyện dài bằng tiếng Việt. Tuân thủ hồ sơ truyện, dàn ý, trạng thái nhân vật và dữ kiện đã duyệt. Phân biệt điều độc giả biết với điều từng nhân vật biết. Không tự đổi tên, hồi sinh nhân vật hay giải quyết mâu thuẫn bằng năng lực chưa được thiết lập. Cảnh phải tạo tiến triển, có hành động, đối thoại tự nhiên, cảm xúc và chi tiết cụ thể. Xây dựng truyện nguyên bản; không sao chép nhân vật, thế giới đặc trưng, chuỗi tình tiết hoặc câu văn từ tác phẩm có sẵn. Không nhắc đến AI, không thêm lời dẫn ngoài truyện.';
 class Engine{
- constructor(store,ai,emit=()=>{}){Object.assign(this,{store,ai,emit,active:null});}
+ constructor(store,ai,emit=()=>{},{sleep=retrySleep}={}){Object.assign(this,{store,ai,emit,sleep,active:null});}
  busy(){return !!this.active;}
  pause(){if(this.active){this.active.pause=true;this.emit({type:'status',project:this.active.id,message:'Sẽ tạm dừng sau bước hiện tại; nội dung sẽ được lưu.'});}}
  abort(){this.active?.controller.abort();}
  async call(p,instructions,prompt,label,stream=false){if(this.active?.controller.signal.aborted)throw new Error('Đã dừng tác vụ.');p.job={...p.job,status:'running',message:label};this.store.save(p);this.emit({type:'phase',project:p.id,message:label});let r,pending='',timer;const flush=()=>{clearTimeout(timer);timer=null;if(pending){const delta=pending;pending='';this.emit({type:'delta',project:p.id,delta});}};const live=delta=>{pending+=delta;if(pending.length>=4096)flush();else if(!timer)timer=setTimeout(flush,80);};try{r=await this.ai.generate(instructions,prompt,{signal:this.active?.controller.signal,onDelta:stream?live:undefined,restartInterrupted:true,shouldPause:()=>!!this.active?.pause,onInterrupted:({text})=>{flush();if(stream){const number=Number(label.match(/\d+/)?.[0]),chapter=p.chapters.find(c=>c.number===number);if(chapter){chapter.interruptedDraft=text;this.store.save(p);}}},onRetry:retry=>{p.job={...p.job,message:retry.message};this.store.save(p);this.emit({type:'phase',project:p.id,message:retry.message});}});flush();}catch(e){flush();if(stream&&e.partialText){const number=Number(label.match(/\d+/)?.[0]),chapter=p.chapters.find(c=>c.number===number);if(chapter){chapter.interruptedDraft=e.partialText;chapter.issues=['Kết nối bị ngắt. Phần nhận được đã lưu riêng và chưa được duyệt. Bấm Tiếp tục để tạo lại phần chưa hoàn tất.'];this.store.save(p);}}throw e;}p.usage||={input:0,output:0,calls:0};p.usage.input+=r.usage.input||0;p.usage.output+=r.usage.output||0;p.usage.calls++;this.store.save(p);return r.text;}
  async structured(p,instructions,prompt,label,validate){
-  for(let attempt=0;attempt<3;attempt++){
-   const text=await this.call(p,instructions,prompt+(attempt?'\nLần trước phản hồi sai cấu trúc. Chỉ trả JSON đúng schema đã yêu cầu; giữ nguyên số chương, các trường văn bản phải là string.':''),label+(attempt?` (lập lại ${attempt}/2)`:''));
-   try{return validate(text);}catch(e){if(this.active.controller.signal.aborted||this.active.pause||attempt===2)throw new Error(errorText(e));}
+  let feedback='';
+  const check=()=>{if(this.active.controller.signal.aborted)throw new DOMException('Đã dừng','AbortError');if(this.active.pause){const e=new Error('Đã tạm dừng; bản nháp và các chương hoàn tất được giữ lại.');e.pauseRequested=true;throw e;}};
+  for(let attempt=0;;attempt++){
+   check();
+   const text=await this.call(p,instructions,prompt+(attempt?'\nLần trước phản hồi sai cấu trúc. Chỉ trả JSON đúng schema đã yêu cầu; giữ nguyên số chương và đủ mọi trường bắt buộc. Không thêm lời giải thích ngoài JSON. Những trường cần kiểm tra: '+feedback:''),label+(attempt?` (tự thử lại lần ${attempt})`:''));
+   try{return validate(text);}catch(e){
+    check();feedback=(e.issues?.map(x=>x.path.join('.')+': '+x.code).join('; ')||errorText(e)).slice(0,1200);
+    if(attempt>=2){const wait=Math.min(60000,5000*2**Math.min(attempt-2,4));p.job={...p.job,message:`${label}: AI trả sai định dạng; chờ ${wait/1000} giây rồi tự thử lại lần ${attempt+1}.`};this.store.save(p);this.emit({type:'phase',project:p.id,message:p.job.message});for(let left=wait;left>0;left-=1000){check();await this.sleep(Math.min(left,1000),null,{signal:this.active.controller.signal});}check();}
+   }
   }
  }
  async run(id,count=5,{planOnly=false}={}){

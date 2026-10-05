@@ -29,3 +29,17 @@ test('pause during recovery wait is responsive and stops any further AI request'
 test('SSE processes the final complete event without requiring a trailing blank line',async()=>{
  const out=[];await readSSE(new Response('data: {"type":"response.completed"}'),v=>out.push(v));assert.equal(out[0].type,'response.completed');
 });
+test('repeated review schema failures recover automatically without rewriting draft or committing invalid memory',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'viet-schema-'));try{
+ const store=new Store(root),p=store.create({title:'Tự phục hồi',genre:'Phiêu lưu',premise:'Hành trình',style:'Tự nhiên',target:2,words:300});p.bible='Hồ sơ';p.arcs=[{title:'Quyển',start:1,end:2,summary:'Hành trình'}];p.chapters=[1,2].map(number=>({number,title:'Chương '+number,plan:'Một cảnh',content:'',status:'planned',wordCount:0,issues:[]}));store.save(p);let writes=0,reviews=0,waits=0;const messages=[];
+ const engine=new Engine(store,{generate:async(_,input)=>{const data=JSON.parse(input.split('\nLần trước')[0]);if(data.task.startsWith('Viết chương')){writes++;return {text:'Bản nháp hoàn chỉnh '+writes,usage:{}};}reviews++;if(reviews<=9){if(reviews>1)assert.match(input,/summary/);return {text:JSON.stringify({approved:true,issues:[]}),usage:{}};}return {text:JSON.stringify({approved:true,issues:[],summary:'Cảnh đã kiểm tra',facts:[],stateUpdates:{},openThreads:[]}),usage:{}};}},e=>messages.push(e),{sleep:async ms=>{assert.ok(ms<=1000);const saved=store.load(p.id);assert.equal(saved.chapters[0].content,'Bản nháp hoàn chỉnh 1');assert.equal(saved.chapters[0].status,'draft');assert.equal(saved.memories.length,0);assert.equal(saved.job.completed,0);waits++;}});
+ await engine.run(p.id,2);const saved=store.load(p.id);assert.equal(writes,2);assert.equal(reviews,11);assert.ok(waits>0);assert.equal(saved.job.status,'completed');assert.equal(saved.job.completed,2);assert.equal(saved.memories.length,2);assert.ok(messages.some(x=>x.message?.includes('tự thử lại lần 9')));
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('user pause during malformed review backoff preserves draft and resumes review without rewriting',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'viet-schema-pause-'));try{
+ const store=new Store(root),p=store.create({title:'Tạm dừng',genre:'Phiêu lưu',premise:'Hành trình',style:'Tự nhiên',target:1,words:300});p.bible='Hồ sơ';p.arcs=[{title:'Quyển',start:1,end:1,summary:'Hành trình'}];p.chapters=[{number:1,title:'Chương',plan:'Một cảnh',content:'Bản nháp đã lưu',status:'draft',wordCount:4,issues:[]}];store.save(p);let calls=0;
+ const engine=new Engine(store,{generate:async()=>{calls++;return {text:'{"approved":true}',usage:{}};}},undefined,{sleep:async()=>engine.pause()});await engine.run(p.id,1);let saved=store.load(p.id);assert.equal(calls,3);assert.equal(saved.job.status,'paused');assert.equal(saved.job.remaining,1);assert.equal(saved.chapters[0].content,'Bản nháp đã lưu');assert.equal(saved.memories.length,0);
+ engine.ai={generate:async(_,input)=>{assert.match(JSON.parse(input).task,/Kiểm tra/);return {text:JSON.stringify({approved:true,issues:[],summary:'Cảnh',facts:[],stateUpdates:{},openThreads:[]}),usage:{}};}};await engine.run(p.id,1);saved=store.load(p.id);assert.equal(saved.job.status,'completed');assert.equal(saved.memories.length,1);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
