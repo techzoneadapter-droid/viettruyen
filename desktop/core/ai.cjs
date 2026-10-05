@@ -18,7 +18,7 @@ async function readSSE(response,onEvent) {
   }
 }
 class AI {
-  constructor(settings,auth,fetcher=fetch,{sleep=delay,random=Math.random}={}) {this.settings=settings;this.auth=auth;this.fetch=fetcher;this.sleep=sleep;this.random=random;this.notBefore=0;}
+  constructor(settings,auth,fetcher=(...args)=>fetch(...args),{sleep=delay,random=Math.random}={}) {this.settings=settings;this.auth=auth;this.fetch=fetcher;this.sleep=sleep;this.random=random;this.notBefore=0;}
   async models() {
     const s=this.settings();
     if(s.provider==='gemini') {
