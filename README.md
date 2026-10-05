@@ -85,3 +85,5 @@ Build đầy đủ Windows nên chạy trên Windows/GitHub Actions. `npm run te
 ### API tạo ảnh riêng
 
 Mục **API tạo ảnh** lưu nguồn Gemini/OpenAI, model và API key riêng, mã hóa trong kho kết nối; không sử dụng hoặc thay đổi key/model AI viết truyện. Sau khi cập nhật từ bản cũ, nhập key ảnh vào mục này một lần. Trong mỗi dự án, tab **Bìa truyện** mặc định dùng kết nối ảnh; vẫn cho phép chọn nguồn/model ảnh riêng và văn phong hình ảnh cho dự án. Ảnh luôn lưu cùng truyện và đi kèm ZIP. Kết nối ảnh cũng áp dụng cho bìa bản dịch và tạo bìa tự động.
+
+Hàng đợi và màn hình dự án hiển thị thanh tiến độ toàn truyện, % chương đã duyệt, số chương đang xử lý và tiến độ đợt hiện tại. Cập nhật sau mỗi bước; dữ liệu vẫn chính xác khi tạm dừng hoặc mở lại app. % dựa trên số chương đã viết và kiểm tra đạt, không ước lượng phần trăm chữ đang được AI trả về.

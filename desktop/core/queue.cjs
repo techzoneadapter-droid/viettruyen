@@ -11,7 +11,7 @@ class JobQueue{
   this.save();
  }
  file(){return path.join(this.store.root,'jobs.json');}
- snapshot(){return {limit:this.limit,items:this.items.map(x=>({...x})),active:this.running.size};}
+ snapshot(){return {limit:this.limit,items:this.items.map(x=>{const p=this.store.load(x.id),job=p.job||{};return {...x,totalCompleted:p.chapters.filter(c=>c.status==='approved').length,target:p.target,currentChapter:job.currentChapter??null,requested:job.requested??x.count,completed:job.completed??0,remaining:job.remaining??x.count};}),active:this.running.size};}
  save(){atomic(this.file(),{limit:this.limit,items:this.items});this.emit({type:'queue',...this.snapshot()});}
  busy(){return this.running.size>0||this.items.some(x=>x.status==='queued');}
  locked(id){return this.running.has(id)||this.items.some(x=>x.id===id&&x.status==='queued');}
@@ -22,7 +22,7 @@ class JobQueue{
   if(!Number.isInteger(count)||count<1||count>1000)throw new Error('Số chương trong đợt phải từ 1 đến 1.000.');
   const p=this.store.load(id);const left=p.target-p.chapters.filter(c=>c.status==='approved').length;if(!planOnly&&!left)throw new Error('Truyện đã hoàn tất số chương dự kiến.');if(!planOnly)count=Math.min(count,left);this.items=this.items.filter(x=>x.id!==id);
   this.items.push({id,title:p.title,count,planOnly,status:'queued',remaining:count,completed:0,message:'Đang chờ lượt chạy.'});
-  p.job={...p.job,status:'queued',message:'Đang chờ lượt chạy.',remaining:count,requested:count,completed:0,planOnly};this.store.save(p);this.save();this.pump();return this.snapshot();
+  p.job={...p.job,status:'queued',message:'Đang chờ lượt chạy.',remaining:count,requested:count,completed:0,planOnly,currentChapter:null};this.store.save(p);this.save();this.pump();return this.snapshot();
  }
  resume(id){const item=this.items.find(x=>x.id===id&&x.status==='paused');if(!item)throw new Error('Không có đợt tạm dừng cho truyện này.');return this.enqueue(id,Math.max(1,item.count),{planOnly:item.planOnly});}
  pause(id,abort=false){
