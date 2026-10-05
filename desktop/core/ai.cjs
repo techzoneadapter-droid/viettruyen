@@ -8,16 +8,23 @@ function parseJSON(text) {
   throw new Error('AI trả về dữ liệu không đúng định dạng. Dữ liệu truyện vẫn được giữ lại.');
 }
 async function readSSE(response,onEvent) {
-  let buffer=''; const decoder=new TextDecoder();
-  for await(const chunk of response.body) {
-    buffer+=decoder.decode(chunk,{stream:true}); buffer=buffer.replace(/\r\n/g,'\n');
-    let index; while((index=buffer.indexOf('\n\n'))>=0) {
-      const frame=buffer.slice(0,index); buffer=buffer.slice(index+2);
-      const data=frame.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');
-      if(data && data!=='[DONE]') onEvent(JSON.parse(data));
-    }
+  let buffer='';const decoder=new TextDecoder();
+  const frame=value=>{const data=value.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).trimStart()).join('\n');if(data&&data!=='[DONE]')onEvent(JSON.parse(data));};
+  for await(const chunk of response.body){
+    buffer+=decoder.decode(chunk,{stream:true});buffer=buffer.replace(/\r\n/g,'\n');
+    let index;while((index=buffer.indexOf('\n\n'))>=0){frame(buffer.slice(0,index));buffer=buffer.slice(index+2);}
   }
+  buffer+=decoder.decode();if(buffer.trim())frame(buffer.replace(/\r\n/g,'\n'));
 }
+function streamError(event){
+ const detail=event.response?.error||event.error||event,code=String(detail.code||event.type||'');
+ const reason=event.response?.incomplete_details?.reason;
+ const quota=/quota|billing|usage_limit|user_not_eligible|credit|spend_limit/i.test(code);
+ const temporary=!quota&&/^(server_is_overloaded|server_error|internal_server_error|rate_limit_exceeded|slow_down|temporarily_unavailable|timeout)$/.test(code);
+ const e=new Error(quota?'Hết hạn mức AI hoặc quota tài khoản. Nội dung đã lưu.':temporary?'Máy chủ AI đang quá tải hoặc giới hạn tốc độ tạm thời. Nội dung đã lưu.':reason==='max_output_tokens'?'AI chưa hoàn tất: đã chạm giới hạn token; tăng token tối đa hoặc chọn Tự động trong Kết nối AI':'AI chưa hoàn tất nội dung. Bản nháp chưa được duyệt.');
+ e.retryable=temporary;e.quota=quota;e.code=code;return e;
+}
+
 class AI {
   constructor(settings,auth,fetcher=(...args)=>fetch(...args),{sleep=delay,random=Math.random,onLimits=()=>{}}={}) {this.settings=settings;this.auth=auth;this.fetch=fetcher;this.sleep=sleep;this.random=random;this.notBefore=0;this.onLimits=onLimits;}
   async models() {
@@ -34,19 +41,26 @@ class AI {
     if(!res.ok) throw new Error('Không lấy được model: HTTP '+res.status);
     const v=await res.json(); return v.models ? v.models.filter(m=>m.visibility==='list').map(m=>({id:m.slug,name:m.display_name})): (v.data||[]).map(m=>({id:m.id,name:m.id}));
   }
-  async generate(instructions,input,{signal,onDelta=()=>{},onRetry=()=>{}}={}) {
-    for(let attempt=0;attempt<5;attempt++){
+  async generate(instructions,input,{signal,onDelta=()=>{},onRetry=()=>{},restartInterrupted=false,onInterrupted=()=>{},shouldPause=()=>false}={}) {
+    const attempts=restartInterrupted?8:5;
+    const paused=()=>{const e=new Error('Đã tạm dừng trong lúc chờ AI; các bước hoàn tất được giữ lại.');e.pauseRequested=true;return e;};
+    const waitFor=async ms=>{if(!restartInterrupted){await this.sleep(ms,null,{signal});return;}let left=ms;while(left>0){if(shouldPause())throw paused();const step=Math.min(left,1000);await this.sleep(step,null,{signal});left-=step;}if(shouldPause())throw paused();};
+    for(let attempt=0;attempt<attempts;attempt++){
       if(signal?.aborted)throw new DOMException('Đã dừng','AbortError');
-      if(this.notBefore>Date.now())await this.sleep(this.notBefore-Date.now(),null,{signal});
+      if(shouldPause())throw paused();
+      if(this.notBefore>Date.now())await waitFor(this.notBefore-Date.now());
       let consumed=false,partial='';
       try{return await this.generateOnce(instructions,input,{signal,onDelta:delta=>{consumed=true;partial+=delta;onDelta(delta);}});}
       catch(e){
         if(partial)e.partialText=partial;
-        if(signal?.aborted||consumed||!(e.retryable||e.name==='TypeError'||e.name==='TimeoutError')||attempt===4)throw e;
-        const wait=e.retryAfter??(5000*2**attempt+Math.floor(this.random()*1000));
+        const temporary=!e.quota&&(e.retryable||e.name==='TypeError'||e.name==='TimeoutError');
+        if(signal?.aborted||(consumed&&!restartInterrupted)||!temporary||attempt===attempts-1)throw e;
+        const wait=e.retryAfter??(Math.min(120000,5000*2**attempt)+Math.floor(this.random()*1500));
         if(wait>180000)throw e;
+        if(partial)await onInterrupted({text:partial,attempt:attempt+1});
+        if(shouldPause())throw paused();
         this.notBefore=Math.max(this.notBefore,Date.now()+wait);
-        onRetry({attempt:attempt+1,max:4,wait,message:`Lỗi kết nối hoặc giới hạn tạm thời; thử lại ${attempt+1}/4 sau ${Math.ceil(wait/1000)} giây.`});
+        onRetry({attempt:attempt+1,max:attempts-1,wait,message:`AI quá tải, mất kết nối hoặc giới hạn tạm thời; chờ ${Math.ceil(wait/1000)} giây rồi thử lại ${attempt+1}/${attempts-1}.`});
       }
     }
   }
@@ -90,9 +104,9 @@ class AI {
       await readSSE(response,event=>{
         if(event.type==='response.output_text.delta') {text+=event.delta;onDelta(event.delta);}
         if(event.type==='response.completed') {complete=true;usage={input:event.response?.usage?.input_tokens||0,output:event.response?.usage?.output_tokens||0};}
-        if(['response.failed','response.incomplete','error'].includes(event.type)) throw new Error('AI chưa hoàn tất: '+(event.response?.incomplete_details?.reason==='max_output_tokens'?'đã chạm giới hạn token; tăng token tối đa hoặc chọn Tự động trong Kết nối AI':event.response?.error?.code||event.error?.code||event.type));
+        if(['response.failed','response.incomplete','error'].includes(event.type)){const e=streamError(event);this.onLimits(scope,s,{...observed,status:e.quota?'quota_exhausted':/rate_limit|slow_down/.test(e.code)?'limited':'error'});throw e;}
       });
-      if(!complete||!text.trim()) throw new Error('Kết nối kết thúc trước khi AI viết xong. Bản nháp chưa được duyệt.');
+      if(!complete||!text.trim()){const e=new Error('Kết nối kết thúc trước khi AI viết xong. Bản nháp chưa được duyệt.');e.retryable=true;this.onLimits(scope,s,{...observed,status:'error'});throw e;}
       return {text,usage};
   }
 }
