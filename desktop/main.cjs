@@ -1,11 +1,13 @@
 const {errorText}=require('./core/messages.js');
+const {JobQueue}=require('./core/queue.cjs');
 const {app,BrowserWindow,ipcMain,shell,dialog,safeStorage}=require('electron');
 const path=require('node:path');const fs=require('node:fs');const {pathToFileURL}=require('node:url');const {z}=require('zod');
 const {Store,atomic,read}=require('./core/store.cjs');const {AI}=require('./core/ai.cjs');const {Engine}=require('./core/engine.cjs');const {ChatGPTAuth}=require('./core/auth.cjs');
 const {moveStorage}=require('./core/storage.cjs');const {signals,generateIdeas}=require('./core/ideas.cjs');
 const {Translator,createTranslation,options:translationOptions,terms:translationTerms}=require('./core/translation.cjs');
 const {coverOptions,generateCover,autoCover,saveCover,coverPreview,coverPath}=require('./core/cover.cjs');const {storyText,storyZip,writeExport}=require('./core/export.cjs');
-let configFile,ideasBusy=false,translationStore,translator,coverTask=null;
+const autoCoverControllers=new Map();
+let configFile,ideasBusy=false,translationStore,translator,queue,coverTask=null;
 function repository(kind){return kind==='translation'?translationStore:store;}
 const coverIdentity=z.object({id:z.string(),kind:z.enum(['story','translation']).default('story')});
 async function createCoverFor(repo,p,signal){return generateCover(repo,p,settings(),auth,signal);}
@@ -20,7 +22,7 @@ class Vault{
 }
 function settings(){return {...{provider:'chatgpt',model:''},...(vault.get('settings')||{})};}
 function publicSettings(){const s=settings();return {provider:s.provider,model:s.model,hasGeminiKey:!!s.geminiKey,hasOpenaiKey:!!s.openaiKey,chatgpt:auth.status()};}
-function idle(){if(engine.busy()||translator?.busy()||ideasBusy||coverTask)throw new Error('Hãy tạm dừng và chờ tác vụ kết thúc trước khi thay đổi dữ liệu hoặc cập nhật.');}
+function idle(){if(queue?.busy()||translator?.busy()||ideasBusy||coverTask)throw new Error('Hãy tạm dừng và chờ tác vụ kết thúc trước khi thay đổi dữ liệu hoặc cập nhật.');}
 function installUpdates(){
  const {autoUpdater}=require('electron-updater');updater=autoUpdater;updater.autoDownload=false;updater.autoInstallOnAppQuit=false;updater.allowDowngrade=false;
  function state(status,message,extra={}){update={status,message,...extra};emit({type:'update',...update});}
@@ -34,22 +36,30 @@ function installUpdates(){
 function handle(name,fn){ipcMain.handle(name,async(event,...args)=>{const expected=pathToFileURL(path.join(__dirname,'ui/index.html')).href;if(event.sender!==win.webContents||event.senderFrame?.url!==expected)throw new Error('Nguồn yêu cầu không hợp lệ.');try{return {ok:true,data:await fn(...args)};}catch(e){return {ok:false,error:errorText(e)};}});}
 app.whenReady().then(()=>{
  configFile=path.join(app.getPath('userData'),'storage.json');const config=read(configFile,{});const root=config.root||path.join(app.getPath('userData'),'data');if(config.root&&!fs.existsSync(root))throw new Error('Không tìm thấy thư mục truyện '+root+'. Kết nối lại ổ đĩa rồi mở app.');store=new Store(root);vault=new Vault(path.join(app.getPath('userData'),'credentials.json'));auth=new ChatGPTAuth(vault,url=>shell.openExternal(url));engine=new Engine(store,new AI(settings,auth),emit);translationStore=new Store(path.join(store.root,'translations'));translator=new Translator(translationStore,engine.ai,emit);for(const item of translationStore.list()){const p=translationStore.load(item.id);if(p.job?.status==='running'){p.job={status:'paused',message:'App đã đóng giữa tác vụ. Bấm Tiếp tục dịch.'};translationStore.save(p);}}
- engine.afterPlan=async(p,signal)=>{if(p.cover||p.coverAttempted||!coverOptions.parse(p.coverConfig||{}).auto)return;coverTask=new AbortController();try{await autoCover(store,p,settings(),auth,AbortSignal.any([signal,coverTask.signal]),emit);}catch(e){if(signal.aborted)throw e;p.coverError='Đã hủy tạo bìa. Bạn có thể tạo lại trong tab Bìa truyện.';store.save(p);}finally{coverTask=null;}};
+ const afterPlan=async(p,signal)=>{const controller=new AbortController();autoCoverControllers.set(p.id,controller);try{await autoCover(store,p,settings(),auth,AbortSignal.any([signal,controller.signal]),emit);}catch(e){if(signal.aborted)throw e;p.coverError='Đã hủy tạo bìa. Có thể tạo lại trong tab Bìa truyện.';store.save(p);}finally{autoCoverControllers.delete(p.id);}};
+ engine.afterPlan=afterPlan;
+ queue=new JobQueue(store,event=>{const worker=new Engine(store,engine.ai,event);worker.afterPlan=afterPlan;return worker;},emit);
+
  for(const p of store.list()){const v=store.load(p.id);if(v.job?.status==='running'){v.job={...v.job,status:'paused',message:'Ứng dụng đã đóng giữa tác vụ. Bấm Tiếp tục để chạy từ phần đã lưu.'};store.save(v);}}
  installUpdates();
- handle('init',()=>({projects:store.list(),translations:translationStore.list(),settings:publicSettings(),version:app.getVersion(),update,storage:{root:store.root},ideas:read(path.join(store.root,'ideas.json'),null)}));
+ handle('init',()=>({projects:store.list(),translations:translationStore.list(),queue:queue.snapshot(),settings:publicSettings(),version:app.getVersion(),update,storage:{root:store.root},ideas:read(path.join(store.root,'ideas.json'),null)}));
  handle('projects:list',()=>store.list());handle('projects:get',id=>store.load(z.string().parse(id)));
- handle('projects:create',input=>{idle();return store.create(input);});
+ handle('projects:create',input=>store.create(input));
  handle('projects:save',input=>{
-  idle();const v=z.object({id:z.string(),bible:z.string().max(30000),style:z.string().max(4000)}).parse(input);const p=store.load(v.id);store.backup(p);p.bible=v.bible;p.style=v.style;return store.save(p);
+  const v=z.object({id:z.string(),bible:z.string().max(30000),style:z.string().max(4000)}).parse(input);if(queue.locked(v.id))throw new Error('Tạm dừng truyện này trước khi sửa hồ sơ.');const p=store.load(v.id);store.backup(p);p.bible=v.bible;p.style=v.style;return store.save(p);
  });
  handle('chapters:save',input=>{
-  idle();const v=z.object({id:z.string(),number:z.number().int().min(1).max(1000),content:z.string().max(200000),plan:z.string().max(6000)}).parse(input);const p=store.load(v.id),c=p.chapters.find(c=>c.number===v.number);if(!c)throw new Error('Không tìm thấy chương.');store.backup(p);
+  const v=z.object({id:z.string(),number:z.number().int().min(1).max(1000),content:z.string().max(200000),plan:z.string().max(6000)}).parse(input);if(queue.locked(v.id))throw new Error('Tạm dừng truyện này trước khi sửa chương.');const p=store.load(v.id),c=p.chapters.find(c=>c.number===v.number);if(!c)throw new Error('Không tìm thấy chương.');store.backup(p);
   if(c.content!==v.content){c.content=v.content;c.wordCount=v.content.trim()?v.content.trim().split(/\s+/).length:0;p.memories=p.memories.filter(m=>m.chapter<v.number);p.ledger=Object.assign({},...p.memories.map(m=>m.stateUpdates||{}));p.openThreads=p.memories.at(-1)?.openThreads||[];for(const later of p.chapters.filter(x=>x.number>=v.number&&x.content)){later.status='needs_review';later.issues=['Nội dung chương trước đã thay đổi; cần kiểm tra lại.'];}}
   c.plan=v.plan;return store.save(p);
  });
- handle('jobs:start',async input=>{const v=z.object({id:z.string(),count:z.number().int().min(1).max(1000),planOnly:z.boolean().default(false)}).parse(input);if(engine.busy()||translator?.busy()||ideasBusy||coverTask)throw new Error('Có tác vụ đang chạy.');void engine.run(v.id,v.count,{planOnly:v.planOnly}).catch(e=>emit({type:'finished',message:errorText(e)}));return {started:true};});
- handle('jobs:pause',()=>{translator.busy()?translator.pause():engine.pause();return true;});handle('jobs:abort',()=>{translator.busy()?translator.abort():engine.abort();return true;});
+ handle('jobs:list',()=>queue.snapshot());
+ handle('jobs:limit',value=>queue.setLimit(z.number().int().min(1).max(4).parse(value)));
+ handle('jobs:resume',id=>{if(translator.busy()||ideasBusy||coverTask)throw new Error('Chờ tác vụ dịch hoặc ảnh hoàn tất.');return queue.resume(z.string().parse(id));});
+ handle('jobs:remove',id=>queue.remove(z.string().parse(id)));
+ handle('jobs:start',input=>{const v=z.object({id:z.string(),count:z.number().int().min(1).max(1000),planOnly:z.boolean().default(false)}).parse(input);if(translator.busy()||ideasBusy||coverTask)throw new Error('Chờ tác vụ dịch hoặc ảnh hoàn tất.');return queue.enqueue(v.id,v.count,{planOnly:v.planOnly});});
+ handle('jobs:pause',id=>{if(translator.busy()&&!id)translator.pause();else queue.pause(id?z.string().parse(id):undefined);return true;});
+ handle('jobs:abort',id=>{if(translator.busy()&&!id)translator.abort();else queue.pause(id?z.string().parse(id):undefined,true);return true;});
  handle('settings:save',input=>{idle();const v=settingsSchema.parse(input);const s=settings();vault.set('settings',{...s,...v,geminiKey:v.geminiKey===undefined?s.geminiKey:v.geminiKey,openaiKey:v.openaiKey===undefined?s.openaiKey:v.openaiKey});return publicSettings();});
  handle('auth:login',()=>{idle();return auth.login();});handle('auth:cancel',()=>auth.cancel());handle('auth:logout',()=>{idle();return auth.logout();});handle('ai:models',()=>{idle();return engine.ai.models();});
  handle('ai:test',async()=>{idle();const r=await engine.ai.generate('Chỉ trả lời bằng tiếng Việt.','Trả lời đúng một câu: Kết nối thành công.');return {text:r.text,usage:r.usage};});
@@ -69,12 +79,12 @@ app.whenReady().then(()=>{
  handle('cover:preview',async input=>{const v=coverIdentity.parse(input),repo=repository(v.kind);return coverPreview(repo,repo.load(v.id));});
  handle('cover:settings',input=>{idle();const v=coverIdentity.extend({config:coverOptions,apiKey:z.string().max(500).optional()}).parse(input),repo=repository(v.kind),p=repo.load(v.id);if(v.apiKey){const source=v.config.provider==='current'?settings().provider:v.config.provider;if(source==='chatgpt')throw new Error('ChatGPT dùng đăng nhập, không nhập key.');vault.set('settings',{...settings(),[source==='gemini'?'geminiKey':'openaiKey']:v.apiKey});}repo.backup(p);p.coverConfig=v.config;repo.save(p);return {project:p,settings:publicSettings()};});
  handle('cover:generate',async input=>{idle();const v=coverIdentity.parse(input),repo=repository(v.kind),p=repo.load(v.id);coverTask=new AbortController();emit({type:'cover:phase',project:p.id,message:'Đang tạo ảnh bìa…'});try{const result=await createCoverFor(repo,p,coverTask.signal);return result;}catch(e){p.coverError=errorText(e);repo.save(p);throw e;}finally{coverTask=null;emit({type:'cover:finished',project:p.id});}});
- handle('cover:cancel',()=>{coverTask?.abort();return true;});
+ handle('cover:cancel',input=>{coverTask?.abort();if(input?.id)autoCoverControllers.get(z.string().parse(input.id))?.abort();return true;});
  handle('cover:import',async input=>{idle();const v=coverIdentity.parse(input),repo=repository(v.kind),result=await dialog.showOpenDialog(win,{title:'Chọn ảnh bìa tối thiểu 800 × 1200 px',filters:[{name:'Ảnh bìa',extensions:['jpg','jpeg','png','webp']}],properties:['openFile']});if(result.canceled)return null;idle();const file=result.filePaths[0];if(fs.statSync(file).size>5*1024*1024)throw new Error('Ảnh tải lên tối đa 5 MB.');const p=repo.load(v.id);coverTask=new AbortController();try{return await saveCover(repo,p,fs.readFileSync(file),coverOptions.parse(p.coverConfig||{}),{provider:'uploaded',model:''});}finally{coverTask=null;}});
  handle('cover:export',async input=>{const v=coverIdentity.parse(input),repo=repository(v.kind),p=repo.load(v.id);const source=coverPath(repo,p),result=await dialog.showSaveDialog(win,{defaultPath:'bia.'+p.cover.format,filters:[{name:'Ảnh bìa',extensions:[p.cover.format]}]});if(result.canceled)return null;writeExport(result.filePath,fs.readFileSync(source));return result.filePath;});
  handle('data:open',()=>shell.openPath(store.root));
  handle('data:location',()=>({root:store.root}));
- handle('data:change',async()=>{idle();const selection=await dialog.showOpenDialog(win,{title:'Chọn thư mục trống để lưu truyện',properties:['openDirectory','createDirectory']});if(selection.canceled)return null;idle();const next=moveStorage(store.root,selection.filePaths[0],target=>atomic(configFile,{root:target}));store=next;engine.store=next;translationStore=new Store(path.join(next.root,'translations'));translator.store=translationStore;return {root:next.root,projects:next.list()};});
+ handle('data:change',async()=>{idle();const selection=await dialog.showOpenDialog(win,{title:'Chọn thư mục trống để lưu truyện',properties:['openDirectory','createDirectory']});if(selection.canceled)return null;idle();const next=moveStorage(store.root,selection.filePaths[0],target=>atomic(configFile,{root:target}));store=next;engine.store=next;queue.store=next;queue.save();translationStore=new Store(path.join(next.root,'translations'));translator.store=translationStore;return {root:next.root,projects:next.list()};});
  handle('ideas:fetch',async input=>{idle();ideasBusy=true;try{const snapshot=await signals(z.string().parse(input));atomic(path.join(store.root,'ideas.json'),snapshot);return snapshot;}finally{ideasBusy=false;}});
  handle('ideas:generate',async input=>{idle();const genre=z.string().trim().min(1).max(160).parse(input);const snapshot=read(path.join(store.root,'ideas.json'),null);if(!snapshot?.items?.length)throw new Error('Lấy tín hiệu web trước khi tạo ý tưởng.');ideasBusy=true;try{const result=await generateIdeas(engine.ai,snapshot,genre);atomic(path.join(store.root,'ideas.json'),result);return result;}finally{ideasBusy=false;}});
  handle('ideas:source',async input=>{const snapshot=read(path.join(store.root,'ideas.json'),null);const index=z.number().int().min(0).max(19).parse(input);const item=snapshot?.items?.[index];if(!item)throw new Error('Không tìm thấy nguồn.');const url=new URL(item.url);if(url.protocol!=='https:'||url.hostname!=='news.google.com')throw new Error('Nguồn không hợp lệ.');await shell.openExternal(url.href);return true;});
@@ -84,6 +94,6 @@ app.whenReady().then(()=>{
  handle('update:install',()=>{idle();if(update.status!=='ready')throw new Error('Bản cập nhật chưa tải xong.');for(const repo of [store,translationStore])for(const item of repo.list())repo.backup(repo.load(item.id));updater.quitAndInstall(false,true);return true;});
  win=new BrowserWindow({width:1380,height:900,minWidth:1050,minHeight:700,title:'Việt Truyện',backgroundColor:'#f7f6f2',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',e=>e.preventDefault());win.loadFile(path.join(__dirname,'ui/index.html'));
- win.on('close',e=>{if(ideasBusy){e.preventDefault();void dialog.showMessageBox(win,{message:'Đang lấy tín hiệu hoặc tạo ý tưởng. Chờ hoàn tất rồi đóng app.'});return;}if(engine.busy()||translator.busy()||coverTask){e.preventDefault();dialog.showMessageBox(win,{type:'question',buttons:['Tiếp tục viết','Dừng và đóng'],defaultId:0,cancelId:0,message:'Có tác vụ đang chạy',detail:'Dừng sẽ giữ lại các bước đã lưu. Bạn có thể tiếp tục khi mở app.'}).then(r=>{if(r.response===1){engine.abort();translator.abort();coverTask?.abort();const done=setInterval(()=>{if(!engine.busy()&&!translator.busy()&&!coverTask){clearInterval(done);win.close();}},200);}});}});
+ win.on('close',e=>{if(ideasBusy){e.preventDefault();void dialog.showMessageBox(win,{message:'Đang lấy tín hiệu hoặc tạo ý tưởng. Chờ hoàn tất rồi đóng app.'});return;}if(queue.busy()||translator.busy()||coverTask){e.preventDefault();dialog.showMessageBox(win,{type:'question',buttons:['Tiếp tục viết','Dừng và đóng'],defaultId:0,cancelId:0,message:'Có tác vụ đang chạy',detail:'Dừng sẽ giữ lại các bước đã lưu. Bạn có thể tiếp tục khi mở app.'}).then(r=>{if(r.response===1){queue.shutdown();translator.abort();coverTask?.abort();const done=setInterval(()=>{if(!queue.busy()&&!translator.busy()&&!coverTask){clearInterval(done);win.close();}},200);}});}});
 }).catch(error=>{dialog.showErrorBox('Không mở được Việt Truyện',error.message);app.quit();});
 app.on('window-all-closed',()=>{auth?.cancel();app.quit();});

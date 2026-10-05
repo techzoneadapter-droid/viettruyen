@@ -4,6 +4,14 @@
 
 **Tải bản cài:** https://github.com/techzoneadapter-droid/viettruyen/releases/latest
 
+## Chạy đợt dài và nhiều truyện
+
+Tab **Hàng đợi viết truyện** cho phép chọn nhiều dự án, số chương viết thêm (1–1.000) và 1–4 truyện chạy đồng thời, mặc định 2. Mỗi truyện có engine, dữ liệu, bộ nhớ và điểm tiếp tục riêng; chương trong cùng truyện viết tuần tự. Truyện chờ sẽ được chạy khi còn chỗ. Có tạm dừng/dừng ngay từng truyện hoặc tất cả; mở lại app thì đợt được giữ ở trạng thái tạm dừng, bấm **Tiếp tục đợt đã lưu** để chạy số chương còn lại. Không viết lại chương đã duyệt.
+
+AI trả JSON sai: tự lập lại đúng bước tối đa 2 lần. Chương lỗi logic: tối đa 3 lượt sửa và kiểm tra lại; còn lỗi thì chỉ tạm dừng truyện đó, không bỏ qua kiểm duyệt. Lỗi mạng trước khi nhận nội dung, giới hạn tốc độ và HTTP máy chủ tạm thời: tối đa 4 lần thử lại, chờ tăng dần, tôn trọng Retry-After (tối đa 3 phút); các tác vụ dùng chung khoảng chờ khi bị giới hạn tốc độ. Hết quota/chi phí hoặc lỗi quyền không tự thử liên tục; hàng đợi tạm dừng và chờ bạn xử lý. Nếu stream bị ngắt sau khi đã nhận chữ, lưu phần đó riêng trong chương, chưa duyệt và không tự gửi lại để tránh nhân đôi yêu cầu/chi phí; bấm tiếp tục khi sẵn sàng.
+
+Chạy 500 chương không có giới hạn nội bộ hơn chục chương; vẫn phụ thuộc hạn mức, mạng và việc kiểm duyệt. Chạy song song không tăng quota. Kiểm thử 500 chương và chạy nhiều truyện dùng AI giả lập, không chứng minh tài khoản thật có hạn mức hoặc chất lượng văn học tương ứng.
+
 ## Dùng lần đầu
 1. Cài `VietTruyen-Setup-*.exe` (Windows 10/11 64-bit).
 2. Mở **Kết nối AI**. Chọn ChatGPT và đăng nhập bằng trình duyệt, hoặc nhập Gemini/OpenAI API key.

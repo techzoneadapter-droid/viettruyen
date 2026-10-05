@@ -18,7 +18,7 @@ async function readSSE(response,onEvent) {
   }
 }
 class AI {
-  constructor(settings,auth,fetcher=fetch) {this.settings=settings;this.auth=auth;this.fetch=fetcher;}
+  constructor(settings,auth,fetcher=fetch,{sleep=delay,random=Math.random}={}) {this.settings=settings;this.auth=auth;this.fetch=fetcher;this.sleep=sleep;this.random=random;this.notBefore=0;}
   async models() {
     const s=this.settings();
     if(s.provider==='gemini') {
@@ -33,9 +33,24 @@ class AI {
     if(!res.ok) throw new Error('Không lấy được model: HTTP '+res.status);
     const v=await res.json(); return v.models ? v.models.filter(m=>m.visibility==='list').map(m=>({id:m.slug,name:m.display_name})): (v.data||[]).map(m=>({id:m.id,name:m.id}));
   }
-  async generate(instructions,input,{signal,onDelta=()=>{}}={}) {
+  async generate(instructions,input,{signal,onDelta=()=>{},onRetry=()=>{}}={}) {
+    for(let attempt=0;attempt<5;attempt++){
+      if(signal?.aborted)throw new DOMException('Đã dừng','AbortError');
+      if(this.notBefore>Date.now())await this.sleep(this.notBefore-Date.now(),null,{signal});
+      let consumed=false,partial='';
+      try{return await this.generateOnce(instructions,input,{signal,onDelta:delta=>{consumed=true;partial+=delta;onDelta(delta);}});}
+      catch(e){
+        if(partial)e.partialText=partial;
+        if(signal?.aborted||consumed||!(e.retryable||e.name==='TypeError'||e.name==='TimeoutError')||attempt===4)throw e;
+        const wait=e.retryAfter??(5000*2**attempt+Math.floor(this.random()*1000));
+        if(wait>180000)throw e;
+        this.notBefore=Math.max(this.notBefore,Date.now()+wait);
+        onRetry({attempt:attempt+1,max:4,wait,message:`Lỗi kết nối hoặc giới hạn tạm thời; thử lại ${attempt+1}/4 sau ${Math.ceil(wait/1000)} giây.`});
+      }
+    }
+  }
+  async generateOnce(instructions,input,{signal,onDelta=()=>{}}={}) {
     const s=this.settings(); if(!s.model) throw new Error('Chọn model trong Kết nối AI trước khi viết.');
-    for(let attempt=0;attempt<3;attempt++) {
       let response;
       const timeout=AbortSignal.timeout(15*60*1000);
       const combined=signal?AbortSignal.any([signal,timeout]):timeout;
@@ -50,14 +65,15 @@ class AI {
         if(!token) throw new Error('Chưa kết nối AI.');
         response=await this.fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},signal:combined,body:JSON.stringify({model:s.model,instructions,input:[{role:'user',content:input}],store:false,stream:true})});
       }
-      if([429,500,502,503,504].includes(response.status)&&attempt<2) {
-        await response.body?.cancel();
-        const header=Number(response.headers.get('retry-after'));
-        await delay(Math.min(60000,Math.max(5000,Number.isFinite(header)?header*1000:5000*2**attempt)),null,{signal}); continue;
-      }
       if(!response.ok) {
-        await response.body?.cancel();
-        throw new Error(response.status===429?'Đã hết hạn mức AI. Tác vụ tạm dừng; bấm Tiếp tục khi hạn mức trở lại.':`AI trả về HTTP ${response.status}. Kiểm tra quyền tài khoản, API key và model.`);
+        let code='';try{const v=await response.json();code=v.error?.code||v.error?.status||'';}catch{}
+        const quota=/quota|billing|usage_limit|user_not_eligible|credit|spend_limit/i.test(String(code));
+        const retryHeader=response.headers.get('retry-after');
+        const seconds=retryHeader===null?NaN:Number(retryHeader);
+        const retryAfter=Number.isFinite(seconds)&&seconds>=0?seconds*1000:retryHeader?Math.max(0,Date.parse(retryHeader)-Date.now()):undefined;
+        const temporary=!quota&&([408,409,500,502,503,504].includes(response.status)||(response.status===429&&(/rate_limit|slow_down/i.test(String(code))||Number.isFinite(retryAfter))));
+        const e=new Error(response.status===429?(temporary?'AI giới hạn tốc độ tạm thời. Dữ liệu đã lưu.':'Hết hạn mức AI hoặc quota tài khoản. Tạm dừng; tiếp tục khi hạn mức trở lại.'):`AI trả HTTP ${response.status}. ${temporary?'Máy chủ tạm thời không sẵn sàng.':'Kiểm tra quyền tài khoản, API key và model.'}`);
+        e.retryable=temporary;e.quota=response.status===429&&!temporary;e.status=response.status;if(Number.isFinite(retryAfter))e.retryAfter=retryAfter;throw e;
       }
       if(s.provider==='gemini') {
         const v=await response.json(),candidate=v.candidates?.[0];
@@ -74,7 +90,6 @@ class AI {
       });
       if(!complete||!text.trim()) throw new Error('Kết nối kết thúc trước khi AI viết xong. Bản nháp chưa được duyệt.');
       return {text,usage};
-    }
   }
 }
 module.exports={AI,readSSE,parseJSON};
