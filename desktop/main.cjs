@@ -1,5 +1,6 @@
 const {errorText}=require('./core/messages.js');
 const {JobQueue,MAX_PARALLEL}=require('./core/queue.cjs');
+const {Accounts,PRIMARY}=require('./core/accounts.cjs');const cooldowns=new Map();let accounts;
 const {app,BrowserWindow,ipcMain,shell,dialog,safeStorage}=require('electron');
 const path=require('node:path');const fs=require('node:fs');const {pathToFileURL}=require('node:url');const {z}=require('zod');
 const {Store,atomic,read}=require('./core/store.cjs');const {AI}=require('./core/ai.cjs');const {Engine}=require('./core/engine.cjs');const {ChatGPTAuth}=require('./core/auth.cjs');
@@ -7,7 +8,7 @@ const {moveStorage}=require('./core/storage.cjs');const {signals,generateIdeas}=
 const {Translator,createTranslation,options:translationOptions,terms:translationTerms}=require('./core/translation.cjs');
 const {coverOptions,generateCover,autoCover,saveCover,coverPreview,coverPath}=require('./core/cover.cjs');const {storyText,storyZip,writeExport}=require('./core/export.cjs');
 const {LimitTracker}=require('./core/limits.cjs');const limits=new LimitTracker();
-function observeLimits(scope,s,data){limits.record(scope,s,data);emit({type:'ai:limits',limits:limits.snapshot(settings(),auth)});}
+function observeLimits(scope,s,data){limits.record(scope,s,data);emit({type:'ai:limits',limits:limits.snapshot(settings(),auth)});if(accounts)emit({type:'accounts:changed',pool:accounts.list()});}
 const autoCoverControllers=new Map();
 let summaryBusy=false;
 let configFile,ideasBusy=false,translationStore,translator,queue,coverTask=null,coverOwner=null;
@@ -19,10 +20,14 @@ const settingsSchema=z.object({provider:z.enum(['chatgpt','gemini','openai']),mo
 app.setName('VietTruyen');if(process.env.VIETTRUYEN_TEST_USER_DATA)app.setPath('userData',process.env.VIETTRUYEN_TEST_USER_DATA);let win,store,engine,auth,vault,updater;let update={status:'idle',message:'Bấm Kiểm tra cập nhật để tìm phiên bản mới.'};
 function activity(){return {translation:translator?.active?.id||null,cover:coverOwner,ideas:ideasBusy};}
 function emit(event){if(win&&!win.isDestroyed()){win.webContents.send('event',event);if(event.type!=='delta')win.webContents.send('event',{type:'activity',...activity()});}}
-function aiForRun(){const saved=settings(),ai=new AI(()=>saved,auth,undefined,{onLimits:observeLimits});Object.defineProperty(ai,'notBefore',{get:()=>engine.ai.notBefore,set:value=>engine.ai.notBefore=value});return ai;}
+function aiForRun(accountId=PRIMARY,binding={}){const saved={...(accounts?accounts.get(accountId):settings()),...(binding.accountModel?{model:binding.accountModel}:{}),...(binding.accountProvider?{provider:binding.accountProvider}:{})},selectedAuth=accounts?accounts.authFor(accountId):auth,ai=new AI(()=>saved,selectedAuth,undefined,{onLimits:observeLimits});ai.accountId=accountId;const scope=require('./core/limits.cjs').limitScope(saved,selectedAuth);Object.defineProperty(ai,'notBefore',{get:()=>cooldowns.get(scope)||0,set:value=>cooldowns.set(scope,value)});return ai;}
+function boundAccountReady(id){const p=accounts.get(id);if(!accounts.ready(p)||(id!==PRIMARY&&!p.enabled))throw new Error('Tài khoản đã gắn với truyện chưa sẵn sàng. Kết nối hoặc bật lại tài khoản trong Tài khoản AI.');}
+function accountIdle(id){if([...queue.running.values()].some(w=>(w.ai.accountId||PRIMARY)===id)||(translator.busy()&&(translator.ai.accountId||PRIMARY)===id)||accounts.busy.has(id))throw new Error('Tài khoản này đang có tác vụ. Chờ hoặc tạm dừng các truyện dùng tài khoản này trước khi sửa.');}
+function accountsChanged(){const pool=accounts.list();emit({type:'accounts:changed',pool});queue?.pump();return pool;}
+
 function projectIdle(kind,id){if((kind==='story'?queue.locked(id):translator.active?.id===id)||(coverOwner?.id===id&&coverOwner?.kind===kind))throw new Error('Dự án này đang có tác vụ. Tạm dừng tác vụ của dự án này trước khi sửa hoặc tạo bìa.');}
 function coverIdle(kind,id){if(coverTask)throw new Error('Đang tạo một ảnh khác. Chờ ảnh đó hoàn tất hoặc hủy tạo ảnh.');projectIdle(kind,id);}
-function authIdle(){if([...queue.running.values()].some(w=>w.ai.settings().provider==='chatgpt')||(translator.busy()&&translator.ai.settings().provider==='chatgpt')||ideasBusy||summaryBusy)throw new Error('Chờ tác vụ dùng ChatGPT hoặc ý tưởng hoàn tất trước khi đổi đăng nhập ChatGPT.');}
+function authIdle(){if([...queue.running.values()].some(w=>(w.ai.accountId||PRIMARY)===PRIMARY&&w.ai.settings().provider==='chatgpt')||(translator.busy()&&translator.ai.settings().provider==='chatgpt')||ideasBusy||summaryBusy)throw new Error('Chờ tác vụ dùng ChatGPT hoặc ý tưởng hoàn tất trước khi đổi đăng nhập ChatGPT.');}
 class Vault{
  constructor(file){this.file=file;this.value={};if(fs.existsSync(file)){if(!safeStorage.isEncryptionAvailable())throw new Error('Không mở được kho thông tin kết nối được mã hóa.');this.value=JSON.parse(safeStorage.decryptString(Buffer.from(read(file,'').data,'base64')));}}
  get(key){return this.value[key];}
@@ -32,7 +37,7 @@ function settings(){return {...{provider:'chatgpt',model:'',maxOutputTokens:0},.
 function publicSettings(){const s=settings();return {provider:s.provider,model:s.model,maxOutputTokens:s.maxOutputTokens,hasGeminiKey:!!s.geminiKey,hasOpenaiKey:!!s.openaiKey,chatgpt:auth.status()};}
 function imageSettings(){return {provider:'openai',model:'',...(vault.get('imageSettings')||{})};}
 function publicImageSettings(){const s=imageSettings();return {provider:s.provider,model:s.model,hasGeminiKey:!!s.geminiKey,hasOpenaiKey:!!s.openaiKey};}
-function idle(){if(queue?.busy()||translator?.busy()||ideasBusy||summaryBusy||coverTask)throw new Error('Hãy tạm dừng và chờ tác vụ kết thúc trước khi thay đổi dữ liệu hoặc cập nhật.');}
+function idle(){if(queue?.busy()||translator?.busy()||ideasBusy||summaryBusy||coverTask||accounts?.busy.size)throw new Error('Hãy tạm dừng và chờ tác vụ kết thúc trước khi thay đổi dữ liệu hoặc cập nhật.');}
 function installUpdates(){
  const {autoUpdater}=require('electron-updater');updater=autoUpdater;updater.autoDownload=false;updater.autoInstallOnAppQuit=false;updater.allowDowngrade=false;
  function state(status,message,extra={}){update={status,message,...extra};emit({type:'update',...update});}
@@ -45,14 +50,14 @@ function installUpdates(){
 }
 function handle(name,fn){ipcMain.handle(name,async(event,...args)=>{const expected=pathToFileURL(path.join(__dirname,'ui/index.html')).href;if(event.sender!==win.webContents||event.senderFrame?.url!==expected)throw new Error('Nguồn yêu cầu không hợp lệ.');try{return {ok:true,data:await fn(...args)};}catch(e){return {ok:false,error:errorText(e)};}});}
 app.whenReady().then(()=>{
- configFile=path.join(app.getPath('userData'),'storage.json');const config=read(configFile,{});const root=config.root||path.join(app.getPath('userData'),'data');if(config.root&&!fs.existsSync(root))throw new Error('Không tìm thấy thư mục truyện '+root+'. Kết nối lại ổ đĩa rồi mở app.');store=new Store(root);vault=new Vault(path.join(app.getPath('userData'),'credentials.json'));auth=new ChatGPTAuth(vault,url=>shell.openExternal(url));engine=new Engine(store,new AI(settings,auth,undefined,{onLimits:observeLimits}),emit);translationStore=new Store(path.join(store.root,'translations'));translator=new Translator(translationStore,engine.ai,emit);for(const item of translationStore.list()){const p=translationStore.load(item.id);if(p.job?.status==='running'){p.job={status:'paused',message:'App đã đóng giữa tác vụ. Bấm Tiếp tục dịch.'};translationStore.save(p);}}
+ configFile=path.join(app.getPath('userData'),'storage.json');const config=read(configFile,{});const root=config.root||path.join(app.getPath('userData'),'data');if(config.root&&!fs.existsSync(root))throw new Error('Không tìm thấy thư mục truyện '+root+'. Kết nối lại ổ đĩa rồi mở app.');store=new Store(root);vault=new Vault(path.join(app.getPath('userData'),'credentials.json'));auth=new ChatGPTAuth(vault,url=>shell.openExternal(url));accounts=new Accounts(vault,settings,auth,url=>shell.openExternal(url),limits);engine=new Engine(store,new AI(settings,auth,undefined,{onLimits:observeLimits}),emit);translationStore=new Store(path.join(store.root,'translations'));translator=new Translator(translationStore,engine.ai,emit);for(const item of translationStore.list()){const p=translationStore.load(item.id);if(p.job?.status==='running'){p.job={status:'paused',message:'App đã đóng giữa tác vụ. Bấm Tiếp tục dịch.'};translationStore.save(p);}}
  const afterPlan=async(p,signal)=>{const controller=new AbortController();autoCoverControllers.set(p.id,controller);try{await autoCover(store,p,imageSettings(),auth,AbortSignal.any([signal,controller.signal]),emit);}catch(e){if(signal.aborted)throw e;p.coverError='Đã hủy tạo bìa. Có thể tạo lại trong tab Bìa truyện.';store.save(p);}finally{autoCoverControllers.delete(p.id);}};
  engine.afterPlan=afterPlan;
- queue=new JobQueue(store,event=>{const worker=new Engine(store,aiForRun(),event);worker.afterPlan=afterPlan;return worker;},emit);
+ queue=new JobQueue(store,(event,item)=>{const worker=new Engine(store,aiForRun(item.accountId||PRIMARY,item),event);worker.afterPlan=afterPlan;return worker;},emit,{allocate:(item,running,items)=>accounts.allocate(item,running,items),onBlocked:(item,q)=>{accounts.blocked.add(item.accountId||PRIMARY);q.pauseAccount(item.accountId||PRIMARY);if(!accounts.available().length)q.pause(undefined,false);accountsChanged();}});
 
  for(const p of store.list()){const v=store.load(p.id);if(v.job?.status==='running'){v.job={...v.job,status:'paused',message:'Ứng dụng đã đóng giữa tác vụ. Bấm Tiếp tục để chạy từ phần đã lưu.'};store.save(v);}}
  installUpdates();
- handle('init',()=>({projects:store.list(),translations:translationStore.list(),queue:queue.snapshot(),activity:activity(),settings:publicSettings(),limits:limits.snapshot(settings(),auth),imageSettings:publicImageSettings(),version:app.getVersion(),update,storage:{root:store.root},ideas:read(path.join(store.root,'ideas.json'),null)}));
+ handle('init',()=>({projects:store.list(),translations:translationStore.list(),queue:queue.snapshot(),activity:activity(),settings:publicSettings(),pool:accounts.list(),limits:limits.snapshot(settings(),auth),imageSettings:publicImageSettings(),version:app.getVersion(),update,storage:{root:store.root},ideas:read(path.join(store.root,'ideas.json'),null)}));
  handle('projects:list',()=>store.list());handle('projects:get',id=>store.load(z.string().parse(id)));
  handle('projects:create',input=>store.create(input));
  handle('projects:save',input=>{
@@ -67,12 +72,23 @@ app.whenReady().then(()=>{
  });
  handle('jobs:list',()=>queue.snapshot());
  handle('jobs:limit',value=>queue.setLimit(z.number().int().min(1).max(MAX_PARALLEL).parse(value)));
- handle('jobs:resume',id=>{id=z.string().parse(id);if(coverOwner?.kind==='story'&&coverOwner.id===id)throw new Error('Chờ ảnh của truyện này hoàn tất.');return queue.resume(id);});
+ handle('jobs:resume',id=>{id=z.string().parse(id);if(coverOwner?.kind==='story'&&coverOwner.id===id)throw new Error('Chờ ảnh của truyện này hoàn tất.');const item=queue.items.find(x=>x.id===id);if(item?.accountId){boundAccountReady(item.accountId);accounts.blocked.delete(item.accountId);}return queue.resume(id);});
  handle('jobs:remove',id=>queue.remove(z.string().parse(id)));
- handle('jobs:start',input=>{const v=z.object({id:z.string(),count:z.number().int().min(1).max(1000),planOnly:z.boolean().default(false)}).parse(input);if(coverOwner?.kind==='story'&&coverOwner.id===v.id)throw new Error('Chờ ảnh của truyện này hoàn tất.');return queue.enqueue(v.id,v.count,{planOnly:v.planOnly});});
+ handle('jobs:start',input=>{const v=z.object({id:z.string(),count:z.number().int().min(1).max(1000),planOnly:z.boolean().default(false)}).parse(input);if(coverOwner?.kind==='story'&&coverOwner.id===v.id)throw new Error('Chờ ảnh của truyện này hoàn tất.');const binding=store.load(v.id).job?.accountId;if(binding){boundAccountReady(binding);accounts.blocked.delete(binding);}if(!accounts.available().length&&!binding)throw new Error('Chưa có tài khoản AI sẵn sàng. Kiểm tra kết nối và trạng thái quota trong Tài khoản AI.');return queue.enqueue(v.id,v.count,{planOnly:v.planOnly});});
  handle('jobs:pause',id=>{queue.pause(id?z.string().parse(id):undefined);return true;});
  handle('jobs:abort',id=>{queue.pause(id?z.string().parse(id):undefined,true);return true;});
- handle('settings:save',input=>{const v=settingsSchema.parse(input);const s=settings();vault.set('settings',{...s,...v,geminiKey:v.geminiKey===undefined?s.geminiKey:v.geminiKey,openaiKey:v.openaiKey===undefined?s.openaiKey:v.openaiKey});return publicSettings();});
+ handle('settings:save',input=>{const v=settingsSchema.parse(input);const s=settings();vault.set('settings',{...s,...v,geminiKey:v.geminiKey===undefined?s.geminiKey:v.geminiKey,openaiKey:v.openaiKey===undefined?s.openaiKey:v.openaiKey});accounts.blocked.delete(PRIMARY);accountsChanged();return publicSettings();});
+ const accountSchema=settingsSchema.extend({id:z.string().uuid().optional(),name:z.string().trim().min(1).max(80),enabled:z.boolean(),maxParallel:z.number().int().min(1).max(MAX_PARALLEL)});
+ handle('accounts:list',()=>accounts.list());
+ handle('accounts:configure',input=>{const v=z.object({enabled:z.boolean(),primarySlots:z.number().int().min(1).max(MAX_PARALLEL)}).parse(input);accounts.configure(v);return accountsChanged();});
+ handle('accounts:save',input=>{const v=accountSchema.parse(input);if(v.id)accountIdle(v.id);const id=accounts.save(v);return {id,pool:accountsChanged()};});
+ handle('accounts:remove',id=>{id=z.string().uuid().parse(id);accountIdle(id);if(queue.items.some(x=>x.accountId===id))throw new Error('Tài khoản còn gắn với đợt trong hàng đợi. Bỏ các đợt đó trước khi xóa tài khoản; nội dung truyện vẫn được giữ.');for(const item of store.list()){const p=store.load(item.id);if(p.job?.accountId===id){delete p.job.accountId;delete p.job.accountName;delete p.job.accountModel;delete p.job.accountProvider;store.save(p);}}accounts.remove(id);return accountsChanged();});
+ async function accountAction(id,fn){id=z.string().uuid().parse(id);accountIdle(id);accounts.get(id);accounts.busy.add(id);try{return await fn(id);}finally{accounts.busy.delete(id);accountsChanged();}}
+ handle('accounts:models',id=>accountAction(id,key=>aiForRun(key).models()));
+ handle('accounts:test',id=>accountAction(id,async key=>{const r=await aiForRun(key).generate('Chỉ trả lời bằng tiếng Việt.','Trả lời đúng một câu: Kết nối thành công.');accounts.blocked.delete(key);return r;}));
+ handle('accounts:login',id=>accountAction(id,async key=>{if(accounts.get(key).provider!=='chatgpt')throw new Error('Chọn ChatGPT trước khi đăng nhập.');const selected=accounts.authFor(key),result=await selected.login(),subject=selected.vault.get('chatgpt')?.subject;const duplicate=[accounts.get(),...accounts.profiles()].some(p=>p.id!==key&&p.provider==='chatgpt'&&accounts.authFor(p.id).vault.get('chatgpt')?.subject===subject);if(subject&&duplicate){selected.logout();throw new Error('Tài khoản ChatGPT này đã có trong một kết nối khác. Chọn tài khoản khác trong trình duyệt.');}return result;}));
+ handle('accounts:cancel',id=>{accounts.authFor(z.string().uuid().parse(id)).cancel();return true;});
+ handle('accounts:logout',id=>accountAction(id,key=>accounts.authFor(key).logout()));
  handle('images:settings',()=>publicImageSettings());
  handle('images:save',input=>{const v=settingsSchema.extend({provider:z.enum(['gemini','openai'])}).parse(input),s=imageSettings();vault.set('imageSettings',{...s,...v,geminiKey:v.geminiKey===undefined?s.geminiKey:v.geminiKey,openaiKey:v.openaiKey===undefined?s.openaiKey:v.openaiKey});return publicImageSettings();});
  handle('auth:login',()=>{authIdle();return auth.login();});handle('auth:cancel',()=>auth.cancel());handle('auth:logout',()=>{authIdle();return auth.logout();});handle('ai:models',()=>{return engine.ai.models();});
@@ -111,6 +127,6 @@ app.whenReady().then(()=>{
  handle('update:install',()=>{idle();if(update.status!=='ready')throw new Error('Bản cập nhật chưa tải xong.');for(const repo of [store,translationStore])for(const item of repo.list())repo.backup(repo.load(item.id));updater.quitAndInstall(false,true);return true;});
  win=new BrowserWindow({width:1380,height:900,minWidth:1050,minHeight:700,title:'Việt Truyện',backgroundColor:'#f7f6f2',autoHideMenuBar:true,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));win.webContents.on('will-navigate',e=>e.preventDefault());win.loadFile(path.join(__dirname,'ui/index.html'));
- win.on('close',e=>{if(ideasBusy||summaryBusy){e.preventDefault();void dialog.showMessageBox(win,{message:'Đang tạo tóm tắt hoặc xử lý ý tưởng. Chờ hoàn tất rồi đóng app.'});return;}if(queue.busy()||translator.busy()||coverTask){e.preventDefault();dialog.showMessageBox(win,{type:'question',buttons:['Tiếp tục viết','Dừng và đóng'],defaultId:0,cancelId:0,message:'Có tác vụ đang chạy',detail:'Dừng sẽ giữ lại các bước đã lưu. Bạn có thể tiếp tục khi mở app.'}).then(r=>{if(r.response===1){queue.shutdown();translator.abort();coverTask?.abort();const done=setInterval(()=>{if(!queue.busy()&&!translator.busy()&&!coverTask){clearInterval(done);win.close();}},200);}});}});
+ win.on('close',e=>{if(ideasBusy||summaryBusy||accounts.busy.size){e.preventDefault();void dialog.showMessageBox(win,{message:'Đang xử lý AI hoặc đăng nhập tài khoản. Chờ hoàn tất rồi đóng app.'});return;}if(queue.busy()||translator.busy()||coverTask){e.preventDefault();dialog.showMessageBox(win,{type:'question',buttons:['Tiếp tục viết','Dừng và đóng'],defaultId:0,cancelId:0,message:'Có tác vụ đang chạy',detail:'Dừng sẽ giữ lại các bước đã lưu. Bạn có thể tiếp tục khi mở app.'}).then(r=>{if(r.response===1){queue.shutdown();translator.abort();coverTask?.abort();const done=setInterval(()=>{if(!queue.busy()&&!translator.busy()&&!coverTask){clearInterval(done);win.close();}},200);}});}});
 }).catch(error=>{dialog.showErrorBox('Không mở được Việt Truyện',error.message);app.quit();});
-app.on('window-all-closed',()=>{auth?.cancel();app.quit();});
+app.on('window-all-closed',()=>{auth?.cancel();for(const a of accounts?.auths.values()||[])a.cancel();app.quit();});

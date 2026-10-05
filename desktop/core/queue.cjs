@@ -3,8 +3,8 @@ const {atomic,read}=require('./store.cjs');
 const {errorText}=require('./messages.js');
 const MAX_PARALLEL=16;
 class JobQueue{
- constructor(store,factory,emit=()=>{}){
-  Object.assign(this,{store,factory,emit,running:new Map(),stopping:false});
+ constructor(store,factory,emit=()=>{},scheduler={}){
+  Object.assign(this,{store,factory,emit,scheduler,running:new Map(),stopping:false});
   const saved=read(this.file(),{limit:2,items:[]});this.limit=Math.max(1,Math.min(MAX_PARALLEL,Number.isInteger(saved.limit)?saved.limit:2));
   this.items=(saved.items||[]).filter(x=>{const p=store.load(x.id);if(p.job?.status==='completed')return false;if(!x.planOnly&&p.job?.remaining===0){p.job={...p.job,status:'completed',message:'Đợt viết đã hoàn tất tại điểm lưu cuối.'};store.save(p);return false;}return true;}).map(x=>({...x,status:'paused',message:'App đã đóng. Bấm Tiếp tục để chạy phần còn lại.'}));
   // A chapter checkpoint is authoritative if the process closed before queue metadata.
@@ -21,8 +21,8 @@ class JobQueue{
   if(this.stopping)throw new Error('Đang dừng các tác vụ. Chờ hoàn tất trước khi chạy tiếp.');
   if(this.locked(id))throw new Error('Truyện này đã chạy hoặc đã nằm trong hàng đợi.');
   if(!Number.isInteger(count)||count<1||count>1000)throw new Error('Số chương trong đợt phải từ 1 đến 1.000.');
-  const p=this.store.load(id);const left=p.target-p.chapters.filter(c=>c.status==='approved').length;if(!planOnly&&!left)throw new Error('Truyện đã hoàn tất số chương dự kiến.');if(!planOnly)count=Math.min(count,left);this.items=this.items.filter(x=>x.id!==id);
-  this.items.push({id,title:p.title,count,planOnly,status:'queued',remaining:count,completed:0,message:'Đang chờ lượt chạy.'});
+  const p=this.store.load(id);const left=p.target-p.chapters.filter(c=>c.status==='approved').length;if(!planOnly&&!left)throw new Error('Truyện đã hoàn tất số chương dự kiến.');if(!planOnly)count=Math.min(count,left);const previous=this.items.find(x=>x.id===id);const binding=previous?.accountId?{accountId:previous.accountId,accountName:previous.accountName,accountModel:previous.accountModel,accountProvider:previous.accountProvider}:p.job?.accountId?{accountId:p.job.accountId,accountName:p.job.accountName,accountModel:p.job.accountModel,accountProvider:p.job.accountProvider}:{};this.items=this.items.filter(x=>x.id!==id);
+  this.items.push({...binding,id,title:p.title,count,planOnly,status:'queued',remaining:count,completed:0,message:'Đang chờ lượt chạy.'});
   p.job={...p.job,status:'queued',message:'Đang chờ lượt chạy.',remaining:count,requested:count,completed:0,planOnly,currentChapter:null};this.store.save(p);this.save();this.pump();return this.snapshot();
  }
  resume(id){const item=this.items.find(x=>x.id===id&&x.status==='paused');if(!item)throw new Error('Không có đợt tạm dừng cho truyện này.');return this.enqueue(id,Math.max(1,item.count),{planOnly:item.planOnly});}
@@ -34,16 +34,18 @@ class JobQueue{
   }
   this.save();return this.snapshot();
  }
- remove(id){if(this.running.has(id))throw new Error('Tạm dừng truyện trước khi bỏ khỏi hàng đợi.');this.items=this.items.filter(x=>x.id!==id);const p=this.store.load(id);p.job={...p.job,status:'paused',message:'Đã bỏ đợt khỏi hàng đợi. Nội dung truyện được giữ nguyên.'};this.store.save(p);this.save();return this.snapshot();}
+ pauseAccount(accountId){for(const item of this.items.filter(x=>x.accountId===accountId))this.pause(item.id,false);}
+ remove(id){if(this.running.has(id))throw new Error('Tạm dừng truyện trước khi bỏ khỏi hàng đợi.');this.items=this.items.filter(x=>x.id!==id);const p=this.store.load(id);if(p.job){delete p.job.accountId;delete p.job.accountName;delete p.job.accountModel;delete p.job.accountProvider;}p.job={...p.job,status:'paused',message:'Đã bỏ đợt khỏi hàng đợi. Nội dung truyện được giữ nguyên.'};this.store.save(p);this.save();return this.snapshot();}
  shutdown(){this.stopping=true;this.pause(undefined,true);}
  pump(){
   if(this.stopping)return;
   while(this.running.size<this.limit){
-   const item=this.items.find(x=>x.status==='queued');if(!item)break;
-   item.status='running';const engine=this.factory(event=>{if(event.message)item.message=errorText(event.message);if(event.type==='saved'){const job=this.store.progress(item.id).job;item.remaining=job.remaining;item.completed=job.completed;}this.emit(event);if(event.type!=='delta')this.save();});
+   let binding;const item=this.items.find(x=>{if(x.status!=='queued')return false;if(!this.scheduler.allocate)return true;const selected=this.scheduler.allocate(x,this.running,this.items);if(!selected)return false;binding=selected;return true;});if(!item)break;
+   if(binding){Object.assign(item,binding);const p=this.store.load(item.id);p.job={...p.job,...binding};this.store.save(p);}
+   item.status='running';const engine=this.factory(event=>{if(event.message)item.message=errorText(event.message);if(event.type==='saved'){const job=this.store.progress(item.id).job;item.remaining=job.remaining;item.completed=job.completed;}this.emit(event);if(event.type!=='delta')this.save();},item);
    this.running.set(item.id,engine);this.save();
    Promise.resolve().then(()=>item.stopRequested?this.store.load(item.id):engine.run(item.id,item.count,{planOnly:item.planOnly})).then(p=>{
-    if(p.job.blocked)this.pause(undefined,false);
+    if(p.job.blocked){if(this.scheduler.onBlocked)this.scheduler.onBlocked(item,this);else this.pause(undefined,false);}
     if(p.job.status==='completed'){this.items=this.items.filter(x=>x.id!==item.id);}
     else{item.status='paused';item.count=Math.max(1,p.job.remaining??item.count);item.message=p.job.message;}
    }).catch(e=>{item.status='paused';item.message=errorText(e);}).finally(()=>{this.running.delete(item.id);this.save();this.pump();});
