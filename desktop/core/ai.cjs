@@ -1,4 +1,5 @@
 const {setTimeout:delay}=require('node:timers/promises');
+const {limitScope,retryDelay,responseLimits}=require('./limits.cjs');
 function parseJSON(text) {
   let value=text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,'');
   try {return JSON.parse(value);} catch {}
@@ -18,7 +19,7 @@ async function readSSE(response,onEvent) {
   }
 }
 class AI {
-  constructor(settings,auth,fetcher=(...args)=>fetch(...args),{sleep=delay,random=Math.random}={}) {this.settings=settings;this.auth=auth;this.fetch=fetcher;this.sleep=sleep;this.random=random;this.notBefore=0;}
+  constructor(settings,auth,fetcher=(...args)=>fetch(...args),{sleep=delay,random=Math.random,onLimits=()=>{}}={}) {this.settings=settings;this.auth=auth;this.fetch=fetcher;this.sleep=sleep;this.random=random;this.notBefore=0;this.onLimits=onLimits;}
   async models() {
     const s=this.settings();
     if(s.provider==='gemini') {
@@ -51,6 +52,8 @@ class AI {
   }
   async generateOnce(instructions,input,{signal,onDelta=()=>{}}={}) {
     const s=this.settings(); if(!s.model) throw new Error('Chọn model trong Kết nối AI trước khi viết.');
+      const scope=limitScope(s,this.auth);
+      const budget=Number(s.maxOutputTokens)||0;
       let response;
       const timeout=AbortSignal.timeout(15*60*1000);
       const combined=signal?AbortSignal.any([signal,timeout]):timeout;
@@ -58,26 +61,27 @@ class AI {
         if(!s.geminiKey) throw new Error('Chưa có Gemini API key.');
         response=await this.fetch('https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(s.model)+':generateContent',{
           method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':s.geminiKey},signal:combined,
-          body:JSON.stringify({systemInstruction:{parts:[{text:instructions}]},contents:[{role:'user',parts:[{text:input}]}]})
+          body:JSON.stringify({systemInstruction:{parts:[{text:instructions}]},contents:[{role:'user',parts:[{text:input}]}],...(budget>0?{generationConfig:{maxOutputTokens:budget}}:{})})
         });
       } else {
         const token=s.provider==='chatgpt'?await this.auth.access():s.openaiKey;
         if(!token) throw new Error('Chưa kết nối AI.');
-        response=await this.fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},signal:combined,body:JSON.stringify({model:s.model,instructions,input:[{role:'user',content:input}],store:false,stream:true})});
+        response=await this.fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},signal:combined,body:JSON.stringify({model:s.model,instructions,input:[{role:'user',content:input}],store:false,stream:true,...(budget>0?{max_output_tokens:budget}:{})})});
       }
+      const observed=responseLimits(response);
       if(!response.ok) {
         let code='';try{const v=await response.json();code=v.error?.code||v.error?.status||'';}catch{}
         const quota=/quota|billing|usage_limit|user_not_eligible|credit|spend_limit/i.test(String(code));
-        const retryHeader=response.headers.get('retry-after');
-        const seconds=retryHeader===null?NaN:Number(retryHeader);
-        const retryAfter=Number.isFinite(seconds)&&seconds>=0?seconds*1000:retryHeader?Math.max(0,Date.parse(retryHeader)-Date.now()):undefined;
+        const retryAfter=retryDelay(response.headers)??undefined;
         const temporary=!quota&&([408,409,500,502,503,504].includes(response.status)||(response.status===429&&(/rate_limit|slow_down/i.test(String(code))||Number.isFinite(retryAfter))));
+        this.onLimits(scope,s,{...observed,status:quota?'quota_exhausted':response.status===429?'limited':'error'});
         const e=new Error(response.status===429?(temporary?'AI giới hạn tốc độ tạm thời. Dữ liệu đã lưu.':'Hết hạn mức AI hoặc quota tài khoản. Tạm dừng; tiếp tục khi hạn mức trở lại.'):`AI trả HTTP ${response.status}. ${temporary?'Máy chủ tạm thời không sẵn sàng.':'Kiểm tra quyền tài khoản, API key và model.'}`);
         e.retryable=temporary;e.quota=response.status===429&&!temporary;e.status=response.status;if(Number.isFinite(retryAfter))e.retryAfter=retryAfter;throw e;
       }
+      this.onLimits(scope,s,observed);
       if(s.provider==='gemini') {
         const v=await response.json(),candidate=v.candidates?.[0];
-        if(candidate?.finishReason!=='STOP') throw new Error('Gemini chưa hoàn tất nội dung: '+(candidate?.finishReason||v.promptFeedback?.blockReason||'không có nội dung'));
+        if(candidate?.finishReason!=='STOP') throw new Error('Gemini chưa hoàn tất nội dung: '+(candidate?.finishReason==='MAX_TOKENS'?'đã chạm giới hạn token; tăng token tối đa hoặc chọn Tự động trong Kết nối AI':candidate?.finishReason||v.promptFeedback?.blockReason||'không có nội dung'));
         const text=(candidate.content?.parts||[]).filter(x=>!x.thought).map(x=>x.text||'').join('');
         if(!text.trim()) throw new Error('AI trả về nội dung rỗng.'); onDelta(text);
         return {text,usage:{input:v.usageMetadata?.promptTokenCount||0,output:v.usageMetadata?.candidatesTokenCount||0}};
@@ -86,7 +90,7 @@ class AI {
       await readSSE(response,event=>{
         if(event.type==='response.output_text.delta') {text+=event.delta;onDelta(event.delta);}
         if(event.type==='response.completed') {complete=true;usage={input:event.response?.usage?.input_tokens||0,output:event.response?.usage?.output_tokens||0};}
-        if(['response.failed','response.incomplete','error'].includes(event.type)) throw new Error('AI chưa hoàn tất: '+(event.response?.error?.code||event.error?.code||event.type));
+        if(['response.failed','response.incomplete','error'].includes(event.type)) throw new Error('AI chưa hoàn tất: '+(event.response?.incomplete_details?.reason==='max_output_tokens'?'đã chạm giới hạn token; tăng token tối đa hoặc chọn Tự động trong Kết nối AI':event.response?.error?.code||event.error?.code||event.type));
       });
       if(!complete||!text.trim()) throw new Error('Kết nối kết thúc trước khi AI viết xong. Bản nháp chưa được duyệt.');
       return {text,usage};

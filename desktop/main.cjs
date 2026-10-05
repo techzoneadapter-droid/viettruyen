@@ -6,6 +6,8 @@ const {Store,atomic,read}=require('./core/store.cjs');const {AI}=require('./core
 const {moveStorage}=require('./core/storage.cjs');const {signals,generateIdeas}=require('./core/ideas.cjs');
 const {Translator,createTranslation,options:translationOptions,terms:translationTerms}=require('./core/translation.cjs');
 const {coverOptions,generateCover,autoCover,saveCover,coverPreview,coverPath}=require('./core/cover.cjs');const {storyText,storyZip,writeExport}=require('./core/export.cjs');
+const {LimitTracker}=require('./core/limits.cjs');const limits=new LimitTracker();
+function observeLimits(scope,s,data){limits.record(scope,s,data);emit({type:'ai:limits',limits:limits.snapshot(settings(),auth)});}
 const autoCoverControllers=new Map();
 let summaryBusy=false;
 let configFile,ideasBusy=false,translationStore,translator,queue,coverTask=null,coverOwner=null;
@@ -13,11 +15,11 @@ function repository(kind){return kind==='translation'?translationStore:store;}
 const coverIdentity=z.object({id:z.string(),kind:z.enum(['story','translation']).default('story')});
 async function createCoverFor(repo,p,signal){return generateCover(repo,p,imageSettings(),auth,signal);}
 async function ensureExportCover(repo,p){if(p.cover){coverPath(repo,p);return p;}coverIdle(repo===store?'story':'translation',p.id);if(!coverOptions.parse(p.coverConfig||{}).auto)throw new Error('Tạo hoặc nhập ảnh bìa trước khi xuất ZIP.');coverOwner={id:p.id,kind:repo===store?'story':'translation'};coverTask=new AbortController();emit({type:'cover:phase',project:p.id,message:'Đang tạo ảnh bìa để xuất ZIP…'});try{return await createCoverFor(repo,p,coverTask.signal);}finally{coverTask=null;coverOwner=null;emit({type:'cover:finished',project:p.id});}}
-const settingsSchema=z.object({provider:z.enum(['chatgpt','gemini','openai']),model:z.string().max(200),geminiKey:z.string().max(500).optional(),openaiKey:z.string().max(500).optional()});
+const settingsSchema=z.object({provider:z.enum(['chatgpt','gemini','openai']),model:z.string().max(200),geminiKey:z.string().max(500).optional(),openaiKey:z.string().max(500).optional(),maxOutputTokens:z.number().int().min(0).max(131072).optional()});
 app.setName('VietTruyen');if(process.env.VIETTRUYEN_TEST_USER_DATA)app.setPath('userData',process.env.VIETTRUYEN_TEST_USER_DATA);let win,store,engine,auth,vault,updater;let update={status:'idle',message:'Bấm Kiểm tra cập nhật để tìm phiên bản mới.'};
 function activity(){return {translation:translator?.active?.id||null,cover:coverOwner,ideas:ideasBusy};}
 function emit(event){if(win&&!win.isDestroyed()){win.webContents.send('event',event);if(event.type!=='delta')win.webContents.send('event',{type:'activity',...activity()});}}
-function aiForRun(){const saved=settings(),ai=new AI(()=>saved,auth);Object.defineProperty(ai,'notBefore',{get:()=>engine.ai.notBefore,set:value=>engine.ai.notBefore=value});return ai;}
+function aiForRun(){const saved=settings(),ai=new AI(()=>saved,auth,undefined,{onLimits:observeLimits});Object.defineProperty(ai,'notBefore',{get:()=>engine.ai.notBefore,set:value=>engine.ai.notBefore=value});return ai;}
 function projectIdle(kind,id){if((kind==='story'?queue.locked(id):translator.active?.id===id)||(coverOwner?.id===id&&coverOwner?.kind===kind))throw new Error('Dự án này đang có tác vụ. Tạm dừng tác vụ của dự án này trước khi sửa hoặc tạo bìa.');}
 function coverIdle(kind,id){if(coverTask)throw new Error('Đang tạo một ảnh khác. Chờ ảnh đó hoàn tất hoặc hủy tạo ảnh.');projectIdle(kind,id);}
 function authIdle(){if([...queue.running.values()].some(w=>w.ai.settings().provider==='chatgpt')||(translator.busy()&&translator.ai.settings().provider==='chatgpt')||ideasBusy||summaryBusy)throw new Error('Chờ tác vụ dùng ChatGPT hoặc ý tưởng hoàn tất trước khi đổi đăng nhập ChatGPT.');}
@@ -26,8 +28,8 @@ class Vault{
  get(key){return this.value[key];}
  set(key,value){if(!safeStorage.isEncryptionAvailable()||(process.platform==='linux'&&safeStorage.getSelectedStorageBackend()==='basic_text'))throw new Error('Hệ điều hành chưa có kho mã hóa an toàn. Không lưu thông tin đăng nhập.');const next={...this.value,[key]:value};atomic(this.file,{data:safeStorage.encryptString(JSON.stringify(next)).toString('base64')});this.value=next;}
 }
-function settings(){return {...{provider:'chatgpt',model:''},...(vault.get('settings')||{})};}
-function publicSettings(){const s=settings();return {provider:s.provider,model:s.model,hasGeminiKey:!!s.geminiKey,hasOpenaiKey:!!s.openaiKey,chatgpt:auth.status()};}
+function settings(){return {...{provider:'chatgpt',model:'',maxOutputTokens:0},...(vault.get('settings')||{})};}
+function publicSettings(){const s=settings();return {provider:s.provider,model:s.model,maxOutputTokens:s.maxOutputTokens,hasGeminiKey:!!s.geminiKey,hasOpenaiKey:!!s.openaiKey,chatgpt:auth.status()};}
 function imageSettings(){return {provider:'openai',model:'',...(vault.get('imageSettings')||{})};}
 function publicImageSettings(){const s=imageSettings();return {provider:s.provider,model:s.model,hasGeminiKey:!!s.geminiKey,hasOpenaiKey:!!s.openaiKey};}
 function idle(){if(queue?.busy()||translator?.busy()||ideasBusy||summaryBusy||coverTask)throw new Error('Hãy tạm dừng và chờ tác vụ kết thúc trước khi thay đổi dữ liệu hoặc cập nhật.');}
@@ -43,14 +45,14 @@ function installUpdates(){
 }
 function handle(name,fn){ipcMain.handle(name,async(event,...args)=>{const expected=pathToFileURL(path.join(__dirname,'ui/index.html')).href;if(event.sender!==win.webContents||event.senderFrame?.url!==expected)throw new Error('Nguồn yêu cầu không hợp lệ.');try{return {ok:true,data:await fn(...args)};}catch(e){return {ok:false,error:errorText(e)};}});}
 app.whenReady().then(()=>{
- configFile=path.join(app.getPath('userData'),'storage.json');const config=read(configFile,{});const root=config.root||path.join(app.getPath('userData'),'data');if(config.root&&!fs.existsSync(root))throw new Error('Không tìm thấy thư mục truyện '+root+'. Kết nối lại ổ đĩa rồi mở app.');store=new Store(root);vault=new Vault(path.join(app.getPath('userData'),'credentials.json'));auth=new ChatGPTAuth(vault,url=>shell.openExternal(url));engine=new Engine(store,new AI(settings,auth),emit);translationStore=new Store(path.join(store.root,'translations'));translator=new Translator(translationStore,engine.ai,emit);for(const item of translationStore.list()){const p=translationStore.load(item.id);if(p.job?.status==='running'){p.job={status:'paused',message:'App đã đóng giữa tác vụ. Bấm Tiếp tục dịch.'};translationStore.save(p);}}
+ configFile=path.join(app.getPath('userData'),'storage.json');const config=read(configFile,{});const root=config.root||path.join(app.getPath('userData'),'data');if(config.root&&!fs.existsSync(root))throw new Error('Không tìm thấy thư mục truyện '+root+'. Kết nối lại ổ đĩa rồi mở app.');store=new Store(root);vault=new Vault(path.join(app.getPath('userData'),'credentials.json'));auth=new ChatGPTAuth(vault,url=>shell.openExternal(url));engine=new Engine(store,new AI(settings,auth,undefined,{onLimits:observeLimits}),emit);translationStore=new Store(path.join(store.root,'translations'));translator=new Translator(translationStore,engine.ai,emit);for(const item of translationStore.list()){const p=translationStore.load(item.id);if(p.job?.status==='running'){p.job={status:'paused',message:'App đã đóng giữa tác vụ. Bấm Tiếp tục dịch.'};translationStore.save(p);}}
  const afterPlan=async(p,signal)=>{const controller=new AbortController();autoCoverControllers.set(p.id,controller);try{await autoCover(store,p,imageSettings(),auth,AbortSignal.any([signal,controller.signal]),emit);}catch(e){if(signal.aborted)throw e;p.coverError='Đã hủy tạo bìa. Có thể tạo lại trong tab Bìa truyện.';store.save(p);}finally{autoCoverControllers.delete(p.id);}};
  engine.afterPlan=afterPlan;
  queue=new JobQueue(store,event=>{const worker=new Engine(store,aiForRun(),event);worker.afterPlan=afterPlan;return worker;},emit);
 
  for(const p of store.list()){const v=store.load(p.id);if(v.job?.status==='running'){v.job={...v.job,status:'paused',message:'Ứng dụng đã đóng giữa tác vụ. Bấm Tiếp tục để chạy từ phần đã lưu.'};store.save(v);}}
  installUpdates();
- handle('init',()=>({projects:store.list(),translations:translationStore.list(),queue:queue.snapshot(),activity:activity(),settings:publicSettings(),imageSettings:publicImageSettings(),version:app.getVersion(),update,storage:{root:store.root},ideas:read(path.join(store.root,'ideas.json'),null)}));
+ handle('init',()=>({projects:store.list(),translations:translationStore.list(),queue:queue.snapshot(),activity:activity(),settings:publicSettings(),limits:limits.snapshot(settings(),auth),imageSettings:publicImageSettings(),version:app.getVersion(),update,storage:{root:store.root},ideas:read(path.join(store.root,'ideas.json'),null)}));
  handle('projects:list',()=>store.list());handle('projects:get',id=>store.load(z.string().parse(id)));
  handle('projects:create',input=>store.create(input));
  handle('projects:save',input=>{
@@ -74,7 +76,8 @@ app.whenReady().then(()=>{
  handle('images:settings',()=>publicImageSettings());
  handle('images:save',input=>{const v=settingsSchema.extend({provider:z.enum(['gemini','openai'])}).parse(input),s=imageSettings();vault.set('imageSettings',{...s,...v,geminiKey:v.geminiKey===undefined?s.geminiKey:v.geminiKey,openaiKey:v.openaiKey===undefined?s.openaiKey:v.openaiKey});return publicImageSettings();});
  handle('auth:login',()=>{authIdle();return auth.login();});handle('auth:cancel',()=>auth.cancel());handle('auth:logout',()=>{authIdle();return auth.logout();});handle('ai:models',()=>{return engine.ai.models();});
- handle('ai:test',async()=>{const r=await engine.ai.generate('Chỉ trả lời bằng tiếng Việt.','Trả lời đúng một câu: Kết nối thành công.');return {text:r.text,usage:r.usage};});
+ handle('ai:limits',()=>limits.snapshot(settings(),auth));
+ handle('ai:test',async()=>{const r=await aiForRun().generate('Chỉ trả lời bằng tiếng Việt.','Trả lời đúng một câu: Kết nối thành công.');return {text:r.text,usage:r.usage};});
  handle('export',async input=>{
   const v=z.object({id:z.string(),format:z.enum(['txt','json','zip'])}).parse(input);let p=store.load(v.id);const r=await dialog.showSaveDialog(win,{defaultPath:p.title.replace(/[<>:"/\\|?*]/g,'_')+'.'+v.format,filters:[{name:v.format==='zip'?'Truyện kèm ảnh bìa':v.format==='txt'?'Văn bản':'Sao lưu truyện',extensions:[v.format]}]});if(r.canceled)return null;
   if(v.format==='zip'){p=await ensureExportCover(store,store.load(v.id));writeExport(r.filePath,storyZip(store,p));}else writeExport(r.filePath,v.format==='json'?JSON.stringify(p,null,2):storyText(p));return r.filePath;
