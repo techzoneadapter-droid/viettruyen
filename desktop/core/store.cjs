@@ -19,10 +19,10 @@ class Store {
   constructor(root) {this.root=root; fs.mkdirSync(root,{recursive:true});}
   file(id) {return path.join(this.root,'projects',validateId(id),'project.json');}
   create(input) {
-    const p={...projectInput.parse(input),id:randomUUID(),created:new Date().toISOString(),updated:new Date().toISOString(),bible:'',arcs:[],chapters:[],memories:[],job:null,usage:{input:0,output:0,calls:0},schema:1};
+    const p={...projectInput.parse(input),id:randomUUID(),created:new Date().toISOString(),updated:new Date().toISOString(),bible:'',synopsis:'',arcs:[],chapters:[],memories:[],job:null,usage:{input:0,output:0,calls:0},schema:1};
     this.save(p); return p;
   }
-  load(id) {const p=read(this.file(id),null); if(!p) throw new Error('Không tìm thấy truyện.'); return p;}
+  load(id) {const p=read(this.file(id),null); if(!p) throw new Error('Không tìm thấy truyện.'); p.synopsis=typeof p.synopsis==='string'?p.synopsis:''; return p;}
   list() {
     const dir=path.join(this.root,'projects'); if(!fs.existsSync(dir)) return [];
     return fs.readdirSync(dir).filter(id=>/^[a-f0-9-]{36}$/.test(id)).map(id=>{const p=this.load(id); return {id:p.id,title:p.title,genre:p.genre,target:p.target,updated:p.updated,completed:p.chapters.filter(c=>c.status==='approved').length,words:p.chapters.reduce((s,c)=>s+(c.wordCount||0),0),job:p.job,cover:p.cover||null};}).sort((a,b)=>b.updated.localeCompare(a.updated));
