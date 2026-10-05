@@ -35,3 +35,17 @@ test('batch resumes after structured plan failure and preserves all twenty exist
   assert.equal(JSON.stringify(q.chapters.slice(0,20)),original);assert.equal(q.chapters[20].status,'approved');assert.match(q.chapters[20].plan,/scene: An đi đến cảng/);assert.equal(q.chapters[29].number,30);assert.equal(q.memories[0].summary,'Dữ kiện đã lưu');assert.equal(calls,3);
  }finally{fs.rmSync(root,{recursive:true});}
 });
+test('legacy validation logs and fresh Zod errors become Vietnamese messages',()=>{
+ const {errorText}=require('../desktop/core/messages.js');const {z}=require('zod');
+ const old=JSON.stringify([{expected:'string',code:'invalid_type',path:['chapters',0,'plan'],message:'Invalid input: expected string, received object'}]);
+ assert.match(errorText(old),/dàn ý chương/);assert.doesNotMatch(errorText(old),/invalid_type|expected|received/);
+ const result=z.object({summary:z.string()}).safeParse({summary:{}});assert.match(errorText(result.error),/kiểm tra chương/);
+ assert.equal(errorText('Hết hạn mức'),'Hết hạn mức');assert.equal(errorText('[1,2]'),'[1,2]');
+});
+test('resume clears legacy job error before the first AI request',async()=>{
+ const {store,p,root}=fixture();try{
+  p.arcs=[{title:'Quyển 1',start:1,end:500,summary:'Đi tìm bản đồ'}];p.job={status:'error',message:'[{"code":"invalid_type","path":["chapters",0,"plan"]}]'};store.save(p);
+  const engine=new Engine(store,{generate:async()=>{const job=store.load(p.id).job;assert.equal(job.status,'running');assert.equal(job.message,'Lập dàn ý chương 1–10');throw new Error('Hết hạn mức');}});
+  await engine.run(p.id,1);assert.equal(store.load(p.id).job.message,'Hết hạn mức');
+ }finally{fs.rmSync(root,{recursive:true});}
+});

@@ -1,3 +1,4 @@
+const {errorText}=require('./messages.js');
 const {z}=require('zod');const {parseJSON}=require('./ai.cjs');
 const options=z.object({title:z.string().trim().min(1).max(160),language:z.enum(['zh','en','convert']),style:z.string().trim().min(1).max(4000),glossary:z.string().max(20000).default('')});
 function terms(text){const result=Object.create(null);for(const line of text.split('\n').filter(x=>x.trim())){const at=line.indexOf('=');if(at<1||!line.slice(at+1).trim())throw new Error('Bảng thuật ngữ: mỗi dòng cần dạng tên gốc = tên tiếng Việt.');result[line.slice(0,at).trim()]=line.slice(at+1).trim();}if(Object.keys(result).length>300)throw new Error('Tối đa 300 thuật ngữ.');return result;}
@@ -41,7 +42,7 @@ class Translator{
    }
    c.content=c.segments.map(s=>s.text).filter(Boolean).join('\n\n');c.wordCount=c.content.trim()?c.content.trim().split(/\s+/).length:0;c.status=c.segments.every(s=>s.reviewed)?'approved':c.status;this.store.save(p);this.emit({type:'translation:saved',project:p.id,chapter:c.number});if(this.active.pause)break;
   }p.job={status:'paused',message:p.chapters.every(c=>c.status==='approved')?'Đã dịch xong truyện.':'Đã lưu. Bấm Tiếp tục dịch để chạy đợt sau.'};}
-  catch(e){p.job={status:'paused',message:e.name==='AbortError'?'Đã dừng; các phần dịch đã lưu được giữ lại.':e.message};}
+  catch(e){p.job={status:'paused',message:e.name==='AbortError'?'Đã dừng; các phần dịch đã lưu được giữ lại.':errorText(e)};}
   finally{this.store.save(p);this.active=null;this.emit({type:'translation:finished',project:p.id,message:p.job.message});}return p;
  }
 }

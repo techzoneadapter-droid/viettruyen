@@ -1,3 +1,4 @@
+const {errorText}=require('./messages.js');
 const {parseJSON}=require('./ai.cjs');const {context}=require('./store.cjs');const {z}=require('zod');
 const skeleton=z.object({bible:z.string().min(10).max(30000),arcs:z.array(z.object({title:z.string(),start:z.number().int(),end:z.number().int(),summary:z.string()})).min(1).max(40)});
 // Models may express a chapter plan as named scenes/steps instead of a string.
@@ -23,7 +24,7 @@ class Engine{
  busy(){return !!this.active;}
  pause(){if(this.active){this.active.pause=true;this.emit({type:'status',message:'Sẽ tạm dừng sau bước hiện tại; nội dung sẽ được lưu.'});}}
  abort(){this.active?.controller.abort();}
- async call(p,instructions,prompt,label,stream=false){if(this.active?.controller.signal.aborted)throw new Error('Đã dừng tác vụ.');this.emit({type:'phase',project:p.id,message:label});const r=await this.ai.generate(instructions,prompt,{signal:this.active?.controller.signal,onDelta:stream?delta=>this.emit({type:'delta',project:p.id,delta}):undefined});p.usage||={input:0,output:0,calls:0};p.usage.input+=r.usage.input||0;p.usage.output+=r.usage.output||0;p.usage.calls++;this.store.save(p);return r.text;}
+ async call(p,instructions,prompt,label,stream=false){if(this.active?.controller.signal.aborted)throw new Error('Đã dừng tác vụ.');p.job={...p.job,status:'running',message:label};this.store.save(p);this.emit({type:'phase',project:p.id,message:label});const r=await this.ai.generate(instructions,prompt,{signal:this.active?.controller.signal,onDelta:stream?delta=>this.emit({type:'delta',project:p.id,delta}):undefined});p.usage||={input:0,output:0,calls:0};p.usage.input+=r.usage.input||0;p.usage.output+=r.usage.output||0;p.usage.calls++;this.store.save(p);return r.text;}
  async run(id,count=5,{planOnly=false}={}){
   if(this.active)throw new Error('Có tác vụ đang chạy. Hãy tạm dừng trước.');if(!Number.isInteger(count)||count<1||count>1000)throw new Error('Số chương trong đợt không hợp lệ.');
   const p=this.store.load(id);this.active={id,pause:false,controller:new AbortController()};this.store.backup(p);p.job={status:'running',message:'Chuẩn bị',started:new Date().toISOString()};this.store.save(p);
@@ -45,7 +46,7 @@ class Engine{
     this.store.save(p);this.emit({type:'saved',project:p.id,chapter:n});if(!review.approved){p.job={...p.job,status:'paused',message:`Chương ${n} cần bạn xem lại. Sửa nội dung rồi bấm Tiếp tục.`};break;}
    }
    if(p.job.status==='running')p.job={...p.job,status:'paused',message:planOnly?'Đã tạo hồ sơ và dàn ý quyển.':p.chapters.filter(c=>c.status==='approved').length===p.target?'Đã hoàn tất truyện.':'Đã lưu đợt viết. Bấm Tiếp tục để viết đợt sau.'};
-  }catch(e){p.job={...p.job,status:'error',message:e.name==='AbortError'?'Đã dừng và giữ dữ liệu đã lưu.':e.message};}finally{this.store.save(p);this.active=null;this.emit({type:'finished',project:p.id,message:p.job.message});}return p;
+  }catch(e){p.job={...p.job,status:'error',message:e.name==='AbortError'?'Đã dừng và giữ dữ liệu đã lưu.':errorText(e)};}finally{this.store.save(p);this.active=null;this.emit({type:'finished',project:p.id,message:p.job.message});}return p;
  }
 }
 module.exports={Engine,reviewSchema,parsePlans};
