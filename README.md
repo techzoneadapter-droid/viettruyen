@@ -81,3 +81,7 @@ npm start
 npm run dist:win
 ```
 Build đầy đủ Windows nên chạy trên Windows/GitHub Actions. `npm run test:desktop` dùng bản app đã đóng gói trong `dist/win-unpacked`. Không đưa key/token vào Git. Để phát hành thủ công: Actions → Build and release Windows → Run workflow.
+
+### API tạo ảnh riêng
+
+Mục **API tạo ảnh** lưu nguồn Gemini/OpenAI, model và API key riêng, mã hóa trong kho kết nối; không sử dụng hoặc thay đổi key/model AI viết truyện. Sau khi cập nhật từ bản cũ, nhập key ảnh vào mục này một lần. Trong mỗi dự án, tab **Bìa truyện** mặc định dùng kết nối ảnh; vẫn cho phép chọn nguồn/model ảnh riêng và văn phong hình ảnh cho dự án. Ảnh luôn lưu cùng truyện và đi kèm ZIP. Kết nối ảnh cũng áp dụng cho bìa bản dịch và tạo bìa tự động.

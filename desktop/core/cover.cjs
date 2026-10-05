@@ -6,13 +6,13 @@ function imageBuffer(base64){if(typeof base64!=='string'||base64.length>55*1024*
 async function requestImage(settings,auth,prompt,config,signal,fetcher=fetch){
  const provider=config.provider==='current'?settings.provider:config.provider;
  if(provider==='chatgpt')throw new Error('Đăng nhập ChatGPT hiện chưa hỗ trợ tạo ảnh trong ứng dụng bên ngoài, kể cả gói trả phí. Chọn Gemini API hoặc OpenAI API riêng cho bìa, hoặc nhập ảnh đã tạo trong ChatGPT. Nguồn viết truyện được giữ nguyên.');
- const model=config.model||(provider==='gemini'?'gemini-3.1-flash-image':'gpt-image-2.5-sunburst');
+ const model=config.model||(provider===settings.provider?settings.model:'')||(provider==='gemini'?'gemini-3.1-flash-image':'gpt-image-2.5-sunburst');
  const combined=signal?AbortSignal.any([signal,AbortSignal.timeout(10*60*1000)]):AbortSignal.timeout(10*60*1000);let url,headers,body;
  if(provider==='gemini'){
-  if(!settings.geminiKey)throw new Error('Nguồn bìa Gemini cần Gemini API key trong Kết nối AI.');
+  if(!settings.geminiKey)throw new Error('Chưa có Gemini API key tạo ảnh. Mở mục API tạo ảnh để lưu key riêng.');
   url='https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(model)+':generateContent';headers={'x-goog-api-key':settings.geminiKey};body={contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{responseModalities:['TEXT','IMAGE'],responseFormat:{image:{aspectRatio:'2:3',...(model.includes('2.5')?{}:{imageSize:'2K'})}}}};
  }else{
-  if(!settings.openaiKey)throw new Error('Nguồn bìa OpenAI cần OpenAI API key; đăng nhập ChatGPT không thay thế API key.');headers={Authorization:'Bearer '+settings.openaiKey};
+  if(!settings.openaiKey)throw new Error('Chưa có OpenAI API key tạo ảnh. Mở mục API tạo ảnh để lưu key riêng; đăng nhập ChatGPT không thay thế API key.');headers={Authorization:'Bearer '+settings.openaiKey};
   url='https://api.openai.com/v1/images/generations';body={model,prompt,size:'1024x1536',quality:'high',output_format:'jpeg',n:1};
  }
  const value=await boundedJSON(await fetcher(url,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(body),signal:combined}));let encoded;
