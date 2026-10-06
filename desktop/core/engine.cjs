@@ -51,13 +51,30 @@ class Engine{
     const chapterContext=context(p,n);
     if(!c.content){c.content=await this.call(p,WRITER,JSON.stringify({task:`Viết chương ${n}: ${c.title}. Khoảng ${p.words} từ. Chỉ trả nội dung chương, không Markdown hay tiêu đề.`,context:chapterContext,ledger:p.ledger||{},openThreads:p.openThreads||[]}),`Viết chương ${n}`,true);delete c.interruptedDraft;c.wordCount=c.content.trim().split(/\s+/u).length;c.status='draft';this.store.save(p);}
     if(this.active.pause)break;let review;
-    for(let pass=0;pass<4;pass++){
+    for(;;){
      review=await this.structured(p,'Bạn là biên tập viên kiểm tra tính nhất quán. Chỉ trả JSON hợp lệ. Không coi mọi thay đổi hợp lý là lỗi.',JSON.stringify({task:'Kiểm tra dữ kiện, tên, thời gian, kiến thức nhân vật, cảnh lặp và kế hoạch. approved=false nếu có lỗi rõ ràng. JSON {approved:boolean,issues:string[],summary:string,facts:string[],stateUpdates:{"tên nhân vật/địa điểm/vật phẩm":"trạng thái mới đã xác nhận"},openThreads:string[]}. openThreads là danh sách tổng hợp tuyến đang mở sau chương, gồm cả tuyến cũ chưa giải quyết. Không bịa dữ kiện.',context:chapterContext,ledger:p.ledger||{},openThreads:p.openThreads||[],content:c.content}),`Kiểm tra chương ${n}`,text=>reviewSchema.parse(parseJSON(text)));c.issues=review.issues;this.store.save(p);if(review.approved)break;
-     if(pass<3&&!this.active.pause){c.content=await this.call(p,WRITER,JSON.stringify({task:'Viết lại toàn bộ chương để sửa lỗi, giữ cảnh đúng, độ dài và văn phong.',issues:review.issues,context:chapterContext,ledger:p.ledger||{},content:c.content}),`Sửa chương ${n}`,true);delete c.interruptedDraft;c.wordCount=c.content.trim().split(/\s+/u).length;this.store.save(p);}else break;
+     c.status='needs_review';this.store.save(p);
+     if(this.active.pause)break;
+     const attempt=(Number.isSafeInteger(c.repairAttempts)?c.repairAttempts:0)+1;
+     if(attempt>3){
+      const wait=Math.min(120000,10000*2**Math.min(attempt-4,4));
+      p.job.message=`Chương ${n} chưa đạt kiểm tra: ${c.issues.join('; ').slice(0,350)||'Cần kiểm tra lại nội dung'}. Tự sửa lần ${attempt} sau ${wait/1000} giây.`;
+      this.store.save(p);this.emit({type:'phase',project:p.id,message:p.job.message});
+      for(let left=wait;left>0;left-=1000){
+       if(this.active.controller.signal.aborted)throw new DOMException('Đã dừng','AbortError');
+       if(this.active.pause)break;
+       await this.sleep(Math.min(left,1000),null,{signal:this.active.controller.signal});
+      }
+      if(this.active.pause)break;
+     }
+     c.repairAttempts=attempt;this.store.save(p);
+     c.content=await this.call(p,WRITER,JSON.stringify({task:`Viết lại toàn bộ chương ${n}: ${c.title}, khoảng ${p.words} từ để sửa các lỗi có căn cứ, giữ cảnh đúng, dàn ý và văn phong. Chỉ trả nội dung chương. Ưu tiên dữ kiện đã duyệt; không bịa thêm quy tắc để né lỗi.`,issues:review.issues,context:chapterContext,ledger:p.ledger||{},openThreads:p.openThreads||[],content:c.content}),`Sửa chương ${n} (lần ${attempt})`,true);
+     delete c.interruptedDraft;c.wordCount=c.content.trim().split(/\s+/u).length;this.store.save(p);
+     if(this.active.pause)break;
     }
     c.status=review.approved?'approved':'needs_review';
     if(review.approved){p.job.completed++;p.job.remaining=Math.max(0,count-p.job.completed);p.memories=p.memories.filter(m=>m.chapter!==n);p.memories.push({chapter:n,summary:review.summary,facts:review.facts,stateUpdates:review.stateUpdates,openThreads:review.openThreads});p.memories.sort((a,b)=>a.chapter-b.chapter);p.ledger={...(p.ledger||{}),...review.stateUpdates};p.openThreads=review.openThreads;}
-    this.store.save(p);this.emit({type:'saved',project:p.id,chapter:n});if(!review.approved){p.job={...p.job,status:'paused',message:`Chương ${n} cần bạn xem lại. Sửa nội dung rồi bấm Tiếp tục.`};break;}
+    this.store.save(p);this.emit({type:'saved',project:p.id,chapter:n});if(!review.approved){p.job={...p.job,status:'paused',message:`Đã tạm dừng ở chương ${n}; bản nháp và lỗi kiểm tra được lưu. Bấm Tiếp tục để tự sửa và kiểm tra lại.`};break;}
    }
    if(p.job.status==='running')p.job={...p.job,status:(!this.active.pause&&(planOnly||p.job.remaining===0||p.chapters.filter(c=>c.status==='approved').length===p.target))?'completed':'paused',message:planOnly?'Đã tạo hồ sơ và dàn ý quyển.':p.chapters.filter(c=>c.status==='approved').length===p.target?'Đã hoàn tất truyện.':'Đã lưu đợt viết. Bấm Tiếp tục để viết đợt sau.'};
   }catch(e){p.job={...p.job,status:e.pauseRequested?'paused':'error',blocked:!!e.quota,message:e.name==='AbortError'?'Đã dừng và giữ dữ liệu đã lưu.':errorText(e)};}finally{this.store.save(p);this.active=null;this.emit({type:'finished',project:p.id,message:p.job.message});}return p;
