@@ -22,14 +22,14 @@ class JobQueue{
   if(this.locked(id))throw new Error('Truyện này đã chạy hoặc đã nằm trong hàng đợi.');
   if(!Number.isInteger(count)||count<1||count>1000)throw new Error('Số chương trong đợt phải từ 1 đến 1.000.');
   const p=this.store.load(id);const left=p.target-p.chapters.filter(c=>c.status==='approved').length;if(!planOnly&&!left)throw new Error('Truyện đã hoàn tất số chương dự kiến.');if(!planOnly)count=Math.min(count,left);const previous=this.items.find(x=>x.id===id);const binding=previous?.accountId?{accountId:previous.accountId,accountName:previous.accountName,accountModel:previous.accountModel,accountProvider:previous.accountProvider}:p.job?.accountId?{accountId:p.job.accountId,accountName:p.job.accountName,accountModel:p.job.accountModel,accountProvider:p.job.accountProvider}:{};this.items=this.items.filter(x=>x.id!==id);
-  this.items.push({...binding,id,title:p.title,count,planOnly,status:'queued',remaining:count,completed:0,message:'Đang chờ lượt chạy.'});
+  this.items.push({...binding,id,title:p.title,count,requested:count,completedBefore:0,planOnly,status:'queued',remaining:count,completed:0,message:'Đang chờ lượt chạy.'});
   p.job={...p.job,status:'queued',message:'Đang chờ lượt chạy.',remaining:count,requested:count,completed:0,planOnly,currentChapter:null};this.store.save(p);this.save();this.pump();return this.snapshot();
  }
  resume(id){const item=this.items.find(x=>x.id===id&&x.status==='paused');if(!item)throw new Error('Không có đợt tạm dừng cho truyện này.');return this.enqueue(id,Math.max(1,item.count),{planOnly:item.planOnly});}
  pause(id,abort=false){
   for(const item of this.items.filter(x=>!id||x.id===id)){
    const engine=this.running.get(item.id);
-   if(engine){if(!engine.busy()){item.stopRequested=true;item.status='paused';const p=this.store.load(item.id);p.job={...p.job,status:'paused',message:'Đã tạm dừng trước khi bắt đầu.'};this.store.save(p);}abort?engine.abort():engine.pause();item.message=abort?'Đang dừng…':'Sẽ tạm dừng sau bước hiện tại.';}
+   if(engine){item.stopRequested=true;if(!engine.busy()){item.stopRequested=true;item.status='paused';const p=this.store.load(item.id);p.job={...p.job,status:'paused',message:'Đã tạm dừng trước khi bắt đầu.'};this.store.save(p);}abort?engine.abort():engine.pause();item.message=abort?'Đang dừng…':'Sẽ tạm dừng sau bước hiện tại.';}
    else if(item.status==='queued'){item.status='paused';item.message='Đã tạm dừng hàng đợi.';const p=this.store.load(item.id);p.job={...p.job,status:'paused',message:item.message};this.store.save(p);}
   }
   this.save();return this.snapshot();
@@ -44,10 +44,15 @@ class JobQueue{
    if(binding){Object.assign(item,binding);const p=this.store.load(item.id);p.job={...p.job,...binding};this.store.save(p);}
    item.status='running';const engine=this.factory(event=>{if(event.message)item.message=errorText(event.message);if(event.type==='saved'){const job=this.store.progress(item.id).job;item.remaining=job.remaining;item.completed=job.completed;}this.emit(event);if(event.type!=='delta')this.save();},item);
    this.running.set(item.id,engine);this.save();
-   Promise.resolve().then(()=>item.stopRequested?this.store.load(item.id):engine.run(item.id,item.count,{planOnly:item.planOnly})).then(p=>{
+   Promise.resolve().then(()=>item.stopRequested?this.store.load(item.id):engine.run(item.id,item.count,{planOnly:item.planOnly,completedBefore:item.completedBefore||0,requested:item.requested||item.count})).then(p=>{
     if(p.job.blocked){if(this.scheduler.onBlocked)this.scheduler.onBlocked(item,this);else this.pause(undefined,false);}
     if(p.job.status==='completed'){this.items=this.items.filter(x=>x.id!==item.id);}
-    else{item.status='paused';item.count=Math.max(1,p.job.remaining??item.count);item.message=p.job.message;}
+    else{item.status='paused';item.count=Math.max(1,p.job.remaining??item.count);item.message=p.job.message;
+     if(p.job.blocked&&!item.stopRequested&&!this.stopping){const binding=this.scheduler.recover?.(item,this.running,this.items);
+      if(binding){const from=item.accountName||item.accountId;item.requested=p.job.requested;item.completedBefore=p.job.completed;Object.assign(item,binding);item.status='queued';item.message=`${from} hết quota; tự chuyển sang ${binding.accountName} · ${binding.accountModel}. Đang chờ lượt để tiếp tục.`;p.job={...p.job,...binding,blocked:false,status:'queued',message:item.message};this.store.save(p);this.emit({type:'status',project:item.id,message:item.message});}
+      else{item.message=p.job.message+' Không còn tài khoản AI dự phòng sẵn sàng; thêm kết nối rồi bấm Tiếp tục.';p.job.message=item.message;this.store.save(p);}
+     }
+    }
    }).catch(e=>{item.status='paused';item.message=errorText(e);}).finally(()=>{this.running.delete(item.id);this.save();this.pump();});
   }
  }

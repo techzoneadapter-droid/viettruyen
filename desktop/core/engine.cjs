@@ -38,9 +38,9 @@ class Engine{
    }
   }
  }
- async run(id,count=5,{planOnly=false}={}){
+ async run(id,count=5,{planOnly=false,completedBefore=0,requested=count}={}){
   if(this.active)throw new Error('Có tác vụ đang chạy. Hãy tạm dừng trước.');if(!Number.isInteger(count)||count<1||count>1000)throw new Error('Số chương trong đợt không hợp lệ.');
-  const p=this.store.load(id);this.active={id,pause:false,controller:new AbortController()};this.store.backup(p);const binding=p.job?.accountId?{accountId:p.job.accountId,accountName:p.job.accountName,accountModel:p.job.accountModel,accountProvider:p.job.accountProvider}:{};p.job={...binding,status:'running',message:'Chuẩn bị',requested:count,completed:0,remaining:count,planOnly,currentChapter:null,started:new Date().toISOString()};this.store.save(p);
+  const p=this.store.load(id);this.active={id,pause:false,controller:new AbortController()};this.store.backup(p);const binding=p.job?.accountId?{accountId:p.job.accountId,accountName:p.job.accountName,accountModel:p.job.accountModel,accountProvider:p.job.accountProvider}:{};p.job={...binding,status:'running',message:'Chuẩn bị',requested,completed:completedBefore,remaining:count,planOnly,currentChapter:null,started:new Date().toISOString()};this.store.save(p);
   try{
    if(!p.arcs.length){const v=await this.structured(p,'Bạn là biên tập viên cấu trúc truyện dài. Chỉ trả JSON hợp lệ.',JSON.stringify({task:'Tạo hồ sơ thế giới, nhân vật, quy tắc năng lực, phong cách, bí mật và kết thúc dự kiến; chia thành các quyển liên tiếp khoảng 25–50 chương. JSON {bible:string,arcs:[{title,start,end,summary}]}. Phủ đủ 1 đến target, không chồng lấn. Mỗi quyển có mục tiêu, xung đột, bước ngoặt và kết thúc.',title:p.title,genre:p.genre,premise:p.premise,style:p.style,target:p.target}),'Xây dựng hồ sơ và các quyển',text=>{const v=skeleton.parse(parseJSON(text));let next=1;for(const a of v.arcs){if(a.start!==next||a.end<a.start||a.end>p.target)throw new Error('Dàn ý quyển không phủ đúng số chương. Hãy chạy lại.');next=a.end+1;}if(next!==p.target+1)throw new Error('Dàn ý chưa phủ đủ số chương.');return v;});p.bible=v.bible;p.arcs=v.arcs;this.store.save(p);}
    if(this.afterPlan)await this.afterPlan(p,this.active.controller.signal);
@@ -73,7 +73,7 @@ class Engine{
      if(this.active.pause)break;
     }
     c.status=review.approved?'approved':'needs_review';
-    if(review.approved){p.job.completed++;p.job.remaining=Math.max(0,count-p.job.completed);p.memories=p.memories.filter(m=>m.chapter!==n);p.memories.push({chapter:n,summary:review.summary,facts:review.facts,stateUpdates:review.stateUpdates,openThreads:review.openThreads});p.memories.sort((a,b)=>a.chapter-b.chapter);p.ledger={...(p.ledger||{}),...review.stateUpdates};p.openThreads=review.openThreads;}
+    if(review.approved){p.job.completed++;p.job.remaining=Math.max(0,requested-p.job.completed);p.memories=p.memories.filter(m=>m.chapter!==n);p.memories.push({chapter:n,summary:review.summary,facts:review.facts,stateUpdates:review.stateUpdates,openThreads:review.openThreads});p.memories.sort((a,b)=>a.chapter-b.chapter);p.ledger={...(p.ledger||{}),...review.stateUpdates};p.openThreads=review.openThreads;}
     this.store.save(p);this.emit({type:'saved',project:p.id,chapter:n});if(!review.approved){p.job={...p.job,status:'paused',message:`Đã tạm dừng ở chương ${n}; bản nháp và lỗi kiểm tra được lưu. Bấm Tiếp tục để tự sửa và kiểm tra lại.`};break;}
    }
    if(p.job.status==='running')p.job={...p.job,status:(!this.active.pause&&(planOnly||p.job.remaining===0||p.chapters.filter(c=>c.status==='approved').length===p.target))?'completed':'paused',message:planOnly?'Đã tạo hồ sơ và dàn ý quyển.':p.chapters.filter(c=>c.status==='approved').length===p.target?'Đã hoàn tất truyện.':'Đã lưu đợt viết. Bấm Tiếp tục để viết đợt sau.'};
