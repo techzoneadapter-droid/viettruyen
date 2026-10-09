@@ -1,3 +1,4 @@
+const {keyField,apiBase}=require('./providers.cjs');
 const {setTimeout:delay}=require('node:timers/promises');
 const {limitScope,retryDelay,responseLimits}=require('./limits.cjs');
 function parseJSON(text) {
@@ -35,9 +36,9 @@ class AI {
       if(!res.ok) throw new Error('Không lấy được model Gemini: HTTP '+res.status);
       const v=await res.json(); return (v.models||[]).filter(m=>m.supportedGenerationMethods?.includes('generateContent')).map(m=>({id:m.name.replace('models/',''),name:m.displayName||m.name}));
     }
-    const token=s.provider==='chatgpt'?await this.auth.access():s.openaiKey;
+    const token=s.provider==='chatgpt'?await this.auth.access():s[keyField(s.provider)];
     if(!token) throw new Error('Hãy kết nối tài khoản hoặc nhập API key.');
-    const res=await this.fetch('https://api.openai.com/v1/models',{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(30000)});
+    const res=await this.fetch(apiBase(s.provider)+'/models',{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(30000)});
     if(!res.ok) throw new Error('Không lấy được model: HTTP '+res.status);
     const v=await res.json(); return v.models ? v.models.filter(m=>m.visibility==='list').map(m=>({id:m.slug,name:m.display_name})): (v.data||[]).map(m=>({id:m.id,name:m.id}));
   }
@@ -78,9 +79,9 @@ class AI {
           body:JSON.stringify({systemInstruction:{parts:[{text:instructions}]},contents:[{role:'user',parts:[{text:input}]}],...(budget>0?{generationConfig:{maxOutputTokens:budget}}:{})})
         });
       } else {
-        let token=s.provider==='chatgpt'?await this.auth.access():s.openaiKey;
+        let token=s.provider==='chatgpt'?await this.auth.access():s[keyField(s.provider)];
         if(!token) throw new Error('Chưa kết nối AI.');
-        const send=accessToken=>this.fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},signal:combined,body:JSON.stringify({model:s.model,instructions,input:[{role:'user',content:input}],store:false,stream:true,...(budget>0?{max_output_tokens:budget}:{})})});
+        const send=accessToken=>this.fetch(apiBase(s.provider)+'/responses',{method:'POST',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},signal:combined,body:JSON.stringify({model:s.model,instructions,input:[{role:'user',content:input}],store:false,stream:true,...(budget>0?{max_output_tokens:budget}:{})})});
         response=await send(token);
         if(response.status===401&&s.provider==='chatgpt'){
           this.onLimits(scope,s,{...responseLimits(response),status:'error'});
@@ -98,7 +99,7 @@ class AI {
         const temporary=!quota&&([408,409,500,502,503,504].includes(response.status)||(response.status===429&&(/rate_limit|slow_down/i.test(String(code))||Number.isFinite(retryAfter))));
         this.onLimits(scope,s,{...observed,status:quota?'quota_exhausted':response.status===429?'limited':'error'});
         const e=new Error(response.status===429?(temporary?'AI giới hạn tốc độ tạm thời. Dữ liệu đã lưu.':'Hết hạn mức AI hoặc quota tài khoản. Tạm dừng; tiếp tục khi hạn mức trở lại.'):`AI trả HTTP ${response.status}. ${temporary?'Máy chủ tạm thời không sẵn sàng.':'Kiểm tra quyền tài khoản, API key và model.'}`);
-        e.retryable=temporary;e.quota=response.status===429&&!temporary;e.status=response.status;if(Number.isFinite(retryAfter))e.retryAfter=retryAfter;throw e;
+        e.retryable=temporary;e.quota=quota||(response.status===429&&!temporary);e.status=response.status;if(Number.isFinite(retryAfter))e.retryAfter=retryAfter;throw e;
       }
       this.onLimits(scope,s,observed);
       if(s.provider==='gemini') {

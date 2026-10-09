@@ -1,6 +1,7 @@
+const {keyField}=require('./providers.cjs');
 const {createHash}=require('node:crypto');
 function limitScope(settings,auth){
- const identity=settings.provider==='chatgpt'?(auth?.vault?.get('chatgpt')?.subject||auth?.status?.().email||''):settings.provider==='gemini'?settings.geminiKey:settings.openaiKey;
+ const identity=settings.provider==='chatgpt'?(auth?.vault?.get('chatgpt')?.subject||auth?.status?.().email||''):settings.provider==='gemini'?settings.geminiKey:settings[keyField(settings.provider)];
  return createHash('sha256').update(JSON.stringify([settings.provider,settings.model,identity||''])).digest('hex');
 }
 function retryDelay(headers,now=Date.now()){
